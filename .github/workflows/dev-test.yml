@@ -25,12 +25,22 @@ jobs:
       - name: Build site
         run: bundle exec jekyll build
 
-      - name: Test site
+      - name: Validate Jekyll configuration
+        run: |
+          bundle exec jekyll doctor || true
+        continue-on-error: true
+
+      - name: Test site (including external links)
         run: |
           bundle exec htmlproofer _site \
-            --disable-external \
-            --checks html,internal_hash \
-            --assume-extension .html
+            --checks html,internal_hash,external_links \
+            --assume-extension .html \
+            --ignore-urls "/^http:\/\/127.0.0.1/,/^http:\/\/0.0.0.0/,/^http:\/\/localhost/"
+
+      - name: Validate front matter
+        run: |
+          gem install front_matter_parser
+          ruby -e "require 'front_matter_parser'; Dir.glob('**/*.md') { |file| FrontMatterParser::Parser.parse_file(file) }"
 
       - name: Check for Jekyll build errors
         run: |
