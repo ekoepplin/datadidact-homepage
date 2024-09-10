@@ -1,0 +1,52 @@
+name: Development Testing
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches-ignore: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.3
+          bundler-cache: true
+
+      - name: Build site
+        run: bundle exec jekyll build
+
+      - name: Validate Jekyll configuration
+        run: |
+          bundle exec jekyll doctor || true
+        continue-on-error: true
+
+      - name: Test site (including external links)
+        run: |
+          bundle exec htmlproofer _site \
+            --checks html,internal_hash,external_links \
+            --assume-extension .html \
+            --ignore-urls "/^http:\/\/127.0.0.1/,/^http:\/\/0.0.0.0/,/^http:\/\/localhost/"
+
+      - name: Validate front matter
+        run: |
+          gem install front_matter_parser
+          ruby -e "require 'front_matter_parser'; Dir.glob('**/*.md') { |file| FrontMatterParser::Parser.parse_file(file) }"
+
+      - name: Check for Jekyll build errors
+        run: |
+          if [ -f _site/index.html ]; then
+            echo "Jekyll build successful"
+          else
+            echo "Jekyll build failed"
+            exit 1
+          fi
