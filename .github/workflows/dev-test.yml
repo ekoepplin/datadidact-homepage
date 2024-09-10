@@ -29,9 +29,8 @@ jobs:
         run: |
           bundle exec htmlproofer _site \
             --disable-external \
-            --check-html \
-            --check-internal-hash \
-            --assume-extension
+            --checks html,internal_hash \
+            --assume-extension .html
 
       - name: Check for Jekyll build errors
         run: |
