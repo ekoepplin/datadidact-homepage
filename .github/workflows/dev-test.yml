@@ -1,0 +1,43 @@
+name: Development Testing
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches-ignore: [main, master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.3
+          bundler-cache: true
+
+      - name: Build site
+        run: bundle exec jekyll build
+
+      - name: Test site
+        run: |
+          bundle exec htmlproofer _site \
+            --disable-external \
+            --check-html \
+            --check-internal-hash \
+            --assume-extension
+
+      - name: Check for Jekyll build errors
+        run: |
+          if [ -f _site/index.html ]; then
+            echo "Jekyll build successful"
+          else
+            echo "Jekyll build failed"
+            exit 1
+          fi

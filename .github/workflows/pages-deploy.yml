@@ -17,13 +17,26 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment
+# New: only run after successful dev-test
 concurrency:
   group: "pages"
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
+  # New: add a dependency on the dev-test workflow
+  wait-for-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for dev-test to succeed
+        uses: lewagon/wait-on-check-action@v1.3.1
+        with:
+          ref: ${{ github.ref }}
+          check-name: 'test'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-interval: 10
+
   build:
+    needs: wait-for-test  # New: add this line
     runs-on: ubuntu-latest
 
     steps:
