@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main, master]
   push:
-    branches-ignore: [main, master]
+    branches: [main, master]  # Add this line if it's not present
   workflow_dispatch:
 
 jobs:
