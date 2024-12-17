@@ -25,3 +25,6 @@ package-lock.json
 # Misc
 _sass/dist
 assets/js/dist
+
+# Custom instructions for your old brain
+CUSTOM_INSTRUCTIONS_FOR_EKOEPPLIN
