@@ -31,12 +31,12 @@ jobs:
         uses: lewagon/wait-on-check-action@v1.3.1
         with:
           ref: ${{ github.ref }}
-          check-name: 'test'  # Change this line
+          check-name: "test" # Change this line
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 10
 
   build:
-    needs: wait-for-test  # New: add this line
+    needs: wait-for-test # New: add this line
     runs-on: ubuntu-latest
 
     steps:
@@ -59,7 +59,9 @@ jobs:
           bundler-cache: true
 
       - name: Build site
-        run: bundle exec jekyll b -d "_site${{ steps.pages.outputs.base_path }}"
+        run: |
+          sed -i "s/\${{ secrets.GOOGLE_ANALYTICS_ID }}/${{ secrets.GOOGLE_ANALYTICS_ID }}/g" _config.yml
+          bundle exec jekyll b -d "_site${{ steps.pages.outputs.base_path }}"
         env:
           JEKYLL_ENV: "production"
 
