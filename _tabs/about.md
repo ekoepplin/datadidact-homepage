@@ -4,8 +4,6 @@ icon: fas fa-info-circle
 order: 4
 ---
 
-![My Profile Picture](/assets/img/avatar.jpg)
-
 # About Me
 
 I’m Eugene — a data practitioner passionate about building robust data systems and sharing knowledge — with 10+ years in data & analytics, helping organizations of every size turn raw information into meaningful insights.
