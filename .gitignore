@@ -28,3 +28,7 @@ assets/js/dist
 
 # Custom instructions for your old brain
 CUSTOM_INSTRUCTIONS_FOR_EKOEPPLIN
+work_repo
+TODO
+.cursor/
+.DS_Store
