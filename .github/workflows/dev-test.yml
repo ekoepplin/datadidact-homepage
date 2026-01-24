@@ -39,8 +39,7 @@ jobs:
 
       - name: Validate front matter
         run: |
-          gem install front_matter_parser
-          ruby -e "require 'front_matter_parser'; Dir.glob('**/*.md') { |file| FrontMatterParser::Parser.parse_file(file) }"
+          ruby tools/validate_front_matter.rb
 
       - name: Check for Jekyll build errors
         run: |
