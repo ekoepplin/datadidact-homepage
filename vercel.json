@@ -1,0 +1,58 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "astro",
+  "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/:year(\\d{4})/:month(\\d{2})/:day(\\d{2})/:slug",
+      "destination": "/posts/:slug",
+      "permanent": true
+    },
+    {
+      "source": "/blog/:year(\\d{4})/:month(\\d{2})/:day(\\d{2})/:slug",
+      "destination": "/posts/:slug",
+      "permanent": true
+    },
+    {
+      "source": "/blog/:slug([^\\/]+)$",
+      "destination": "/posts/:slug",
+      "permanent": true
+    },
+    {
+      "source": "/categories/:category(.*)",
+      "destination": "/tags/:category",
+      "permanent": true
+    },
+    {
+      "source": "/tag/:tag",
+      "destination": "/tags/:tag",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        }
+      ]
+    }
+  ]
+}
