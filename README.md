@@ -1,4 +1,4 @@
-# Eugen Köpplin's Personal Blog
+# Data Lifecycle Diaries
 
 A personal blog built with [Astro](https://astro.build) and deployed on [Vercel](https://vercel.com).
 

@@ -101,9 +101,9 @@ export default defineConfig({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "avatar.jpg"],
       manifest: {
-        name: "Eugen Köpplin",
-        short_name: "ekoepplin",
-        description: "Personal blog by Eugen Köpplin.",
+        name: "Data Lifecycle Diaries",
+        short_name: "DataLifecycle",
+        description: "Data Lifecycle Diaries - A blog by Eugen Köpplin.",
         theme_color: "#006cac",
         background_color: "#fdfdfd",
         display: "standalone",
