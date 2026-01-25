@@ -35,7 +35,7 @@ export const SITE: Site = {
   author: "Eugen Köpplin",
   profile: "https://datadidact.com/about",
   desc: "Personal blog by Eugen Köpplin.",
-  title: "Data Lifecycle Diaries",
+  title: "Data Lifecycle Diary",
   ogImage: "avatar.jpg",
   lightAndDarkMode: true,
   postPerIndex: 10,
