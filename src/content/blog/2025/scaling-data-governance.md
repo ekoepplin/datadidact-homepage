@@ -1,16 +1,15 @@
 ---
 title: "Scaling Data Teams: The Case for Centralized Data Governance Standards"
-pubDatetime: 2026-01-25T09:00:00+01:00
+pubDatetime: 2026-01-23T09:00:00+01:00
 description: "How to maintain consistent data governance when multiple teams independently create and manage their own dbt models using centralized policies with decentralized execution."
 heroImage: /assets/img/2025/scaling-data-governance/scaling-data-governance.jpg
 tags: ["dwh", "data-governance", "dlt", "dbt", "duckdb", "python", "sql"]
 ---
 
-As organizations scale their data platforms using dbt mesh and data mesh architectures, a critical challenge emerges: **how do you maintain consistent data governance when multiple teams independently create and manage their own dbt models?**
+As organizations scale their data platforms with data mesh architectures, a critical challenge emerges: **how do you maintain consistent data governance when multiple teams independently create and manage their own data models?** The challenges compound quickly: **cross-domain and even domain-specific data has no clear owner** and upstream changes break downstream systems silently. This is where Data mesh requires *more* governance, not less. Stronger contracts, not weaker ones.
 
-The answer lies in a pattern that might seem counterintuitive at first: **centralized policies with decentralized execution**. In this article, we'll explore why decentralized governance fails at scale, how centralized standards solve this problem, and walk through a complete implementation using the [`dbt-data-governance-standards`](https://github.com/ekoepplin/dbt-data-governance-standards) package as a reference.
-
-This isn't about providing production-ready code or a one-size-fits-all solution. It's about sharing ideas and patterns that have helped teams scale their data governance. Every organization is different, and the specifics will vary. The goal here is to illustrate an approach—one that you can adapt, extend, or use as inspiration for your own governance strategy.
+The answer to this challenge lies in a pattern that might seem counterintuitive at first: **centralized policies with decentralized execution**. In this article, we'll explore why decentralized governance fails at scale, how centralized standards solve this problem, and walk through a complete implementation using the [`dbt-data-governance-standards`](https://github.com/ekoepplin/dbt-data-governance-standards) package as a reference.
+Every organization is different, and the specifics will vary. The goal here is to illustrate an approach—one that you can adapt, extend, or use as inspiration for your own governance strategy.
 
 *A big shoutout to [Darren Haken's talk at Coalesce](https://www.youtube.com/watch?v=aCiOZcWM1J0) which inspired many of the ideas in this article. If you're interested in data governance at scale, I highly recommend watching it.*
 
@@ -76,8 +75,6 @@ This scenario repeats across every governance dimension:
 **Data catalogs show incomplete information.** Tools like Atlan, DataHub, or Monte Carlo expect consistent schemas. When every team uses different conventions, these tools require custom mapping logic for each team.
 
 **Standards drift over time.** Even if teams start with similar conventions, without enforcement, they diverge. New team members bring their own preferences. Six months later, you have chaos.
-
-The pattern is clear: decentralized governance scales with O(n) overhead—every new team adds proportional coordination cost. What's needed is an approach that scales with O(1) overhead—where the central investment stays constant regardless of team count.
 
 ---
 
@@ -262,7 +259,7 @@ models:
         pii_retention_days: 365
 ```
 
-Both approaches produce the same structure. The macro provides autocomplete and catches missing required fields at compile time, while direct YAML is simpler and doesn't require installing the dbt package. Choose whichever fits your workflow.
+Both approaches produce the same structure. The macro provides autocomplete and catches missing required fields at compile time, while direct YAML is simpler for teams that prefer not to use the macro. Choose whichever fits your workflow.
 
 **Column-level metadata** is always written as plain YAML:
 
