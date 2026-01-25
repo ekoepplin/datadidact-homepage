@@ -102,6 +102,13 @@ npm run preview
    - If a build fails after updates, diagnose the specific issue and FIX it properly
    - NEVER resort to downgrading as a solution
 
+7. **Updating CHANGELOG.md**:
+
+   - Update CHANGELOG.md with the changes you made
+   - Use the proper format for the changelog
+   - Add the changes to the appropriate section
+   - The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
 ## Tech Stack
 
 - **Astro** (latest version) - Main framework
