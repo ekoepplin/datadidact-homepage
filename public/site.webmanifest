@@ -1,7 +1,7 @@
 {
-  "name": "Peter Steinberger",
-  "short_name": "Peter Steinberger",
-  "description": "iOS developer, entrepreneur, founder of PSPDFKit (acquired), vibe coding my next project",
+  "name": "Data Lifecycle Diary",
+  "short_name": "Data Didact",
+  "description": "Personal blog by Eugen Köpplin.",
   "icons": [
     {
       "src": "/favicon.ico",
