@@ -479,7 +479,7 @@ Data governance at scale requires more than good intentions and documentation. I
 2. **Tools that make compliance easy** for the engineers writing models
 3. **Automated enforcement** that makes non-compliance impossible to merge
 
-The `dbt-data-governance-standards` package provides all three. By centralizing the definition of governance standards while decentralizing their application, organizations can scale their data mesh architectures without sacrificing consistency, compliance, or sanity.
+The `dbt-data-governance-standards` package provides some orientation in this regard. By centralizing the definition of governance standards while decentralizing their application, organizations can scale their data mesh architectures without sacrificing consistency, compliance, or sanity.
 
 The investment in centralized governance pays dividends every time:
 
