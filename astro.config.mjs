@@ -33,11 +33,10 @@ export default defineConfig({
 	      filter: (page) => {
 	        // Always exclude archives if not showing them
 	        if (!SITE.showArchives && page.endsWith("/archives")) return false;
-        
-        // Optionally exclude tag pages to reduce sitemap bloat
-        // Uncomment the following line to exclude all tag pages:
-        // if (page.includes("/tags/")) return false;
-        
+
+        // Exclude /page/1 as it duplicates the homepage
+        if (page.match(/\/page\/1\/?$/)) return false;
+
         return true;
       },
 	      serialize: (item) => {
@@ -52,8 +51,10 @@ export default defineConfig({
 	        item.changefreq = ChangeFreqEnum.MONTHLY;
 	        item.priority = 0.5;
 	        
+	        const siteOrigin = SITE.website.replace(/\/+$/, '');
+
 	        // Homepage - highest priority, frequent updates
-	        if (url === SITE.website || url === SITE.website + '/') {
+	        if (url === siteOrigin || url === siteOrigin + '/') {
 	          item.priority = 1.0;
 	          item.changefreq = ChangeFreqEnum.DAILY;
 	          item.lastmod = new Date().toISOString();
@@ -63,8 +64,8 @@ export default defineConfig({
 	          item.priority = 0.9;
 	          item.changefreq = ChangeFreqEnum.WEEKLY;
 	        }
-	        // Recent blog posts (2024-2025)
-	        else if (url.includes('/posts/2025') || url.includes('/posts/2024')) {
+	        // Recent blog posts (2024+)
+	        else if (url.includes('/posts/2026') || url.includes('/posts/2025') || url.includes('/posts/2024')) {
 	          item.priority = 0.8;
 	          item.changefreq = ChangeFreqEnum.WEEKLY;
 	        }
