@@ -10,7 +10,7 @@ tags: ["ducklake", "duckdb", "data-lake", "analytics", "parquet", "dlt", "dbt", 
 
 DuckLake is an open table format that adds ACID transactions to Parquet files. It covers the same ground as Delta Lake or Apache Iceberg—snapshots, time travel, schema evolution—but takes a different architectural approach that trades ecosystem maturity for simplicity.
 
-> Much of the inspiration for this article comes from the [DuckLake presentation](https://www.youtube.com/watch?v=zeonmOO9jm4) by DuckDB creators Hannes Mühleisen and Mark Raasveldt. It's a refreshingly honest talk that walks through the design rationale and what they think existing formats get wrong. It's what got me interested enough to build a pipeline on top of DuckLake and write this up.
+> Much of the inspiration for this article comes from the [DuckLake presentation](https://www.youtube.com/watch?v=zeonmOO9jm4) by DuckDB creators Hannes Mühleisen and Mark Raasveldt. The presentation covers the design rationale and architectural decisions behind DuckLake.
 
 The core idea: **lakehouse table formats got complex because they tried to make blob storage behave like a transactional metadata store.** DuckLake takes a different route—put all metadata (catalog + table metadata) into a real SQL database, and keep the actual data as Parquet on object storage.
 
@@ -75,7 +75,7 @@ Because metadata lives in a SQL database, concurrent readers and writers are han
 
 ### Snapshots and Time Travel
 
-Every write creates a snapshot. You can query your data as it existed at any point in its history, which is useful for debugging pipeline issues or auditing changes. Because snapshot metadata is just rows in a SQL table, resolving "what did this table look like at timestamp X?" is an indexed query rather than a walk through a chain of manifest files. I'll show concrete examples of this later.
+Every write creates a snapshot. You can query your data as it existed at any point in its history, which is useful for debugging pipeline issues or auditing changes. Because snapshot metadata is just rows in a SQL table, resolving "what did this table look like at timestamp X?" is an indexed query rather than a walk through a chain of manifest files.
 
 ### Schema Evolution
 
@@ -97,7 +97,7 @@ The practical upgrade path looks like: start local with DuckDB for development, 
 
 ## DuckLake in Practice: A Real ELT Pipeline
 
-To test whether DuckLake actually holds up beyond toy examples, I built a reference implementation—[dwh-on-a-lake](https://github.com/ekoepplin/dwh-on-a-lake)—that wires up an end-to-end ELT pipeline using three open-source tools:
+A reference implementation—[dwh-on-a-lake](https://github.com/ekoepplin/dwh-on-a-lake)—demonstrates an end-to-end ELT pipeline using three open-source tools:
 
 - **[dlt](https://dlthub.com/)** (data load tool) for ingestion
 - **[dbt](https://www.getdbt.com/)** for transformation
@@ -212,11 +212,11 @@ make pipeline-dev         # Ingest → Transform → Test (local DuckLake)
 make pipeline-motherduck  # Same pipeline, MotherDuck DuckLake
 ```
 
-Identical code at every layer. The only difference is the connection string. This was one of the things that actually surprised me in practice—I expected more friction switching between local DuckDB and MotherDuck, but the dbt models and dlt pipeline genuinely don't change.
+Identical code at every layer. The only difference is the connection string. The dbt models and dlt pipeline remain unchanged when switching between local DuckDB and MotherDuck.
 
 ## Time Travel, Snapshots, and Change Tracking
 
-I mentioned time travel earlier but kept it abstract. Here's what it actually looks like in practice, using the dwh-on-a-lake pipeline. Every write creates a snapshot, and because snapshots are rows in a SQL table, querying history is just SQL.
+Time travel enables querying historical table states. Every write creates a snapshot, and because snapshots are rows in a SQL table, querying history is just SQL. The following examples use the dwh-on-a-lake pipeline to demonstrate these capabilities.
 
 First, attach the local DuckLake catalog—this is the same catalog that dlt writes to and dbt reads from:
 
@@ -279,7 +279,7 @@ SELECT 'yesterday', COUNT(*) FROM lake_yesterday.dbt_dev.mart_newsapi__articles;
 
 ### Practical Use Case: Debugging a Bad Load
 
-This is where time travel became useful for me in practice. Say you run `make ingest-dev` and the article counts in the mart look off. Instead of restoring backups or grepping through pipeline logs, you can just ask the database what changed:
+Time travel enables debugging scenarios such as investigating unexpected data changes. If article counts in the mart look incorrect after running `make ingest-dev`, instead of restoring backups or grepping through pipeline logs, you can query the database to see what changed:
 
 ```sql
 -- Current row count in the raw articles table
@@ -333,7 +333,7 @@ FROM lake.table_changes(
 ORDER BY published_at DESC;
 ```
 
-Each row includes a `change_type` column (`insert`, `delete`, `update_preimage`, or `update_postimage`) alongside the full row data. It's essentially built-in change data capture. In the dwh-on-a-lake pipeline, I've found this useful for tracing how articles entered and evolved across ingestion runs—especially when debugging why a merge updated records I didn't expect it to.
+Each row includes a `change_type` column (`insert`, `delete`, `update_preimage`, or `update_postimage`) alongside the full row data. This provides built-in change data capture, enabling tracing of how records entered and evolved across ingestion runs—useful for debugging unexpected merge behavior.
 
 ### Annotating Snapshots
 
@@ -354,7 +354,7 @@ The `author`, `commit_message`, and `extra_info` fields show up in `snapshots()`
 
 ## When Does DuckLake Make Sense?
 
-Based on my experience building dwh-on-a-lake, DuckLake is a good fit when:
+DuckLake is a good fit when:
 
 - **You don't want to manage metadata file cleanup**: No compaction jobs, no orphan file cleaners, no manifest expiration
 - **You need multi-table transactions**: Atomic writes across multiple tables are straightforward since the metadata store is a real database

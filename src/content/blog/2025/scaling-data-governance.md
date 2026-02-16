@@ -205,7 +205,7 @@ Alternatively, teams can write the same structure directly in YAML without using
 
 ## Dual Installation: Macros for Authors, Validation for CI
 
-The `dbt-data-governance-standards` package serves two complementary purposes through two installation methods:
+The `dbt-data-data-governance-standards` package illustrates two complementary purposes through two installation methods:
 
 ### 1. dbt Package: For Model Authors
 
@@ -305,7 +305,7 @@ Once installed, validate any dbt project:
 dbt-governance-validate --dbt-project /path/to/your/dbt/project
 ```
 
-This dual-installation approach means:
+What this approach means:
 
 - **Authors** get helpful macros that make writing compliant metadata easy
 - **CI/CD** gets a validation tool that ensures compliance is mandatory
@@ -617,4 +617,4 @@ Practical outcomes of this approach:
 - GDPR deletion requests can be automated against documented PII fields
 - Data catalogs receive consistent metadata across all teams
 
-Start with one team. Validate the approach. Expand from there. The pattern scales because the standards are version-controlled and enforced uniformly.
+Start with one team. Validate the approach. Expand from there.
