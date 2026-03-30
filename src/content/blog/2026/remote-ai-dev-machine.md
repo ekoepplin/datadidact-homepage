@@ -91,7 +91,7 @@ Create a systemd override at `/etc/systemd/system/ollama.service.d/override.conf
 ```ini
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0"
-Environment="OLLAMA_NUM_CTX=131072"
+Environment="OLLAMA_CONTEXT_LENGTH=131072"
 ```
 
 ```bash
@@ -116,12 +116,25 @@ vLLM is worth the extra setup when you need throughput, want a specific
 HuggingFace-hosted model, or plan to run multiple Claude Code agents concurrently
 against the same endpoint.
 
-The setup on an ARM64 Blackwell GPU involved some real friction — PyPI's pre-built
-torch wheels are CPU-only, CUDA kernel compilation has to target the right GPU
-architecture, and build times are measured in tens of minutes per iteration. If you
-hit those same walls, the key flags are `--no-build-isolation-package vllm` for uv and
-`CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120"` for the Blackwell target. Worth it once
-it compiles.
+On most Linux machines with a standard NVIDIA GPU, install is straightforward:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install vllm
+```
+
+On ARM64 Blackwell it's a different story. Even though vLLM now ships aarch64 wheels,
+those prebuilds don't cover the Blackwell GPU architecture — so you're building from
+source. The CUDA kernels need to target the right GPU explicitly. The key flags are
+`--no-build-isolation-package` for uv and `CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120"`
+for the Blackwell target:
+
+```bash
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120" \
+  uv pip install --no-build-isolation-package vllm vllm
+```
+
+Build times are measured in tens of minutes per iteration — worth it once it compiles.
 
 Running a compressed (AWQ 4-bit) model efficiently on new GPU hardware requires
 low-level kernels that have been compiled specifically for that GPU. The Blackwell chip
@@ -131,6 +144,19 @@ is new enough that those kernels didn't exist yet in mainline vLLM — which is 
 stayed up until 2 AM to sort this out and then put the whole thing on GitHub. Without
 his repo, this section would end with "I gave up." That kind of quiet infrastructure
 work is what actually makes this stuff usable — so thanks Mitko.
+
+Before starting vLLM, it's worth downloading the model to the local HuggingFace cache
+first. vLLM can pull models on startup, but if your connection drops mid-transfer you're
+back to square one — and these models are large. The HuggingFace CLI handles resumable
+downloads cleanly:
+
+```bash
+pip install huggingface_hub   # if not already installed
+hf download cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit
+```
+
+Once it's cached locally, vLLM picks it up from disk — no network required at serve time,
+which is also why the start script sets `HF_HUB_OFFLINE=1`.
 
 The serving config lives in a YAML file and is passed to vLLM at startup:
 
@@ -157,8 +183,8 @@ A few things here worth calling out:
   default that narrates its own chain of thought. For Claude Code use, this wastes
   tokens on output you don't need.
 - The AWQ 4-bit model occupies ~22 GB of VRAM; `gpu_memory_utilization: 0.70`
-  leaves the remaining ~84 GB for the KV cache, which at 256 k context supports
-  around 11 concurrent full-context requests.
+  gives vLLM a total budget of ~90 GB (70% of 128 GB), leaving ~68 GB for the
+  KV cache — enough for around 11 concurrent full-context requests at 256 k.
 
 The start script activates the venv and hands off to vLLM:
 
@@ -202,7 +228,7 @@ loopback. This matters for the devcontainer setup later.
 Open the tunnel:
 
 ```bash
-ssh HP-ZGX   # keep this terminal open; ports are now live locally
+ssh -N -f HP-ZGX   # runs in the background; ports are now live locally
 ```
 
 Verify it's working:
@@ -254,18 +280,11 @@ claude-vllm() {
     claude "$@"
 }
 
-# Real Anthropic API — unsets everything above
-claude-anthropic() {
-  unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
-  unset ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL ANTHROPIC_DEFAULT_HAIKU_MODEL
-  claude "$@"
-}
 ```
 
-Daily workflow: `ssh HP-ZGX` in one terminal (tunnel stays open), `claude-zgx` in
-another. Every prompt, subagent spawn, and tool call goes to the ZGX — zero Anthropic
-API traffic. Switch to `claude-vllm` for the higher-throughput vLLM backend, or
-`claude-anthropic` when you genuinely need frontier reasoning.
+Daily workflow: `ssh -N -f HP-ZGX` to bring up the tunnel in the background, then `claude-zgx` in
+your terminal. Every prompt, subagent spawn, and tool call goes to the ZGX — zero Anthropic
+API traffic. Switch to `claude-vllm` for the higher-throughput vLLM backend.
 
 ---
 
@@ -344,7 +363,7 @@ WORKDIR /workspace
 ```
 
 The base image is `node:20-slim` because Claude Code is distributed as an npm package.
-The aliases file contains the same `claude-zgx` / `claude-vllm` / `claude-anthropic`
+The aliases file contains the same `claude-zgx` / `claude-vllm`
 functions from above, with `localhost` replaced by `host.docker.internal`.
 
 **Running Claude Code inside the container:**
@@ -399,9 +418,7 @@ re-attaches to) a structured tmux session:
 - `ollama` — Ollama shell
 - `shell` — clean working shell
 
-The Ansible repo and the vLLM config are at
-[`hp-zgx-workflow`](https://github.com/ekoepplin/hp-zgx-workflow) if you want to
-adapt them to different hardware.
+The Ansible playbook and vLLM config referenced in this post are available on request — feel free to reach out if you want to adapt them to different hardware.
 
 ---
 
@@ -418,27 +435,14 @@ adapt them to different hardware.
 
 ---
 
-## Summary
+## Two Days Well Spent
 
-The core mechanic is just two environment variables: set `ANTHROPIC_BASE_URL` to your
-local model server and Claude Code routes everything there. Everything else in this post
-is just making that feel good — a persistent Ollama service, a fast vLLM backend for
-heavier workloads, an SSH tunnel so the GPU feels local, and a devcontainer so the whole
-thing is reproducible and portable.
+What started as "let me just get this machine set up" turned into a proper two-day rabbit
+hole — Ollama, vLLM, a custom vLLM fork, SSH tunnels, devcontainers, Ansible. More than I
+planned, but genuinely fun. There's something satisfying about getting all the pieces to
+click together, especially when the last piece is a 35B model actually running well on your
+own hardware.
 
-**You can do this today, and it actually works.** The model quality is good enough for
-real coding work. The throughput handles concurrent agents. Your code stays on your own
-machine. And once the setup is done, the day-to-day experience is just `ssh HP-ZGX` in
-one terminal and `claude-zgx` in another — nothing else to think about.
-
-If you want to take it further, hand the devcontainer to a colleague. They open the
-project, hit `code .`, and get the same setup pointed at their own hardware — no
-config, no re-authentication, no surprises.
-
-The five files that make it work:
-
-1. `/etc/systemd/system/ollama.service.d/override.conf` — host binding + context window
-2. `vllm-config.yaml` — model, quantization, tool parser, thinking mode off
-3. `~/.ssh/config` — `LocalForward *:11434` and `*:8000` with wildcard binding
-4. `~/.zshrc` functions — `claude-zgx` / `claude-vllm` / `claude-anthropic`
-5. `.devcontainer/devcontainer.json` — mount `.claude`, non-root user, env vars pointing at `host.docker.internal`
+The thing that stuck with me most wasn't the setup itself — it was how good the output was.
+I went in expecting a compromise. I came out thinking local AI for coding is already there.
+Not "good enough if you squint." Actually good.
