@@ -1,117 +1,133 @@
-# Instructions for Claude
+# CLAUDE.md
 
-This document contains important instructions and notes for Claude when working on this project.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## CRITICAL GUIDELINES
+## COMMANDS
 
-### NEVER CREATE BLOG POSTS WITHOUT CONSENT
+### Development & Build
+- Start local development server: `npm run dev`
+- Build production site: `npm run build`
+- Validate and build (with TypeScript check): `npm run build:check`
+- Preview build locally: `npm run preview`
 
-- **NEVER CREATE BLOG POSTS WITHOUT EXPLICIT CONSENT** from steipete
-- Do not write or propose new blog content unless specifically requested
-- Only help with editing or fixing existing posts when asked
+### Linting & Formatting
+- Run linter: `npm run lint`
+- Fix lint issues: `npm run lint:fix`
+- Format code: `npm run format`
+- Check code: `npm run check`
+- Fix formatting issues: `npm run check:fix`
 
-### USE GSED INSTEAD OF SED
+### Git Workflow
+- Commit message convention: Conventional Commits via `cz`
+- Run linter before commit in git hook: `biome check --write src`
 
-- **ALWAYS USE `gsed` INSTEAD OF `sed`** - For better compatibility across platforms
-- `gsed` provides GNU sed features that are more consistent across Linux and macOS
-- If editing files with sed-like operations, use `gsed` to ensure reliable results
+## PROJECT ARCHITECTURE
 
-### ALWAYS USE LATEST DEPENDENCIES
+### Tech Stack
+- **Astro 5.x** - Static site generator with island architecture (React components inside static HTML)
+- **TailwindCSS 4.x** - Utility-first CSS framework via @tailwindcss/vite plugin
+- **React 19.x** - Used for interactive components via @astrojs/react
+- **MDX** - Markdown + JSX support for blog posts
+- **TypeScript 5.x** - Full type safety with ESLint/Biome integration
 
-- **NEVER DOWNGRADE DEPENDENCIES** - Always use the latest stable versions
-- **ALWAYS USE TOOLING TO CHECK VERSIONS** - Never guess or assume versions
-- Run `npm outdated` to see what packages need updating
-- Run `npm view [package] version` to check the latest published version
-- When fixing dependency issues, always upgrade to the latest compatible versions
-- Prioritize staying current with the ecosystem, even if it requires more work to adapt
+### Project Structure (src/)
 
-### IMPORTANT: Development Server Limitation
+| Directory | Purpose |
+|-----------|---------|
+| `content/blog/` | Blog posts in markdown/mdx format (organized by year) |
+| `pages/` | Astro routes/layouts: index, posts, individual post, archives, about |
+| `components/` | Reusable UI components (.astro files), organized with ui subdirectory |
+| `layouts/` | Page layouts and templates (BaseLayout, BlogPost, AboutLayout) |
+| `styles/` | Global CSS styles using Tailwind |
+| `utils/` | Shared utilities (remark plugins, post processing, image generation) |
+| `consts.ts` | Site-wide configuration constants (website info, navigation, social links) |
 
-- **DO NOT run `npm run dev`** in agent mode - this will create an endless loop and stop the agent from working properly
-- Instead, use `npm run build` to verify your changes
+### Key Configuration Files
 
-## Development Process
+- **astro.config.mjs** - Astro build configuration with integrations:
+  - Sitemap with custom priority rules
+  - MDX + remark plugins (Toc, collapse tables)
+  - Lazy-load images
+  - PWA support via @vite-pwa/astro
+  - Google Fonts integration
 
-### Testing Changes
+- **src/content.config.ts** - Blog post schema with Zod validation:
+  - Frontmatter fields: pubDate, modDate, title, tags, featured, draft, ogImage
+  - Optional: author (defaults to SITE.author), unlisted, timezone
 
-To properly test changes, use these commands:
+### Build Output & Generated Files
 
-```bash
-# Build the project (this is preferred over npm run dev in agent mode)
-npm run build
-
-# If you need to preview the build (only do when specifically requested)
-npm run preview
+```
+dist/           - Production build output (static assets + pages)
+.astro/         - Astro type generation cache (ignore)
+temp-*/         - Temporary directories during import (ignore)
+src/content/temp/ - Temp post files during processing (ignore)
 ```
 
-### Project Structure
+## COMMON TASKS
 
-- `/src/content/blog/` - Contains all blog posts in markdown format
-- `/src/pages/` - Contains page templates and routing
-- `/src/components/` - Reusable UI components
-- `/src/layouts/` - Page layouts and templates
-- `/src/styles/` - CSS styles including Tailwind customizations
+### Adding a New Blog Post
 
-### Common Tasks
+1. Create file in `/src/content/blog/YYYY-MM-DD/slug.md`
+2. Include frontmatter with: `pubDate`, `title`, `description`, `tags` array
+3. Content supports MDX (JSX syntax) via MDX integrations
 
-1. **Adding a new blog post**:
+Example:
+```markdown
+---
+pubDate: 2026-03-08T10:00:00+00:00
+title: "Post Title"
+description: "Short description"
+tags: ["data", "analytics"]
+featured: true
+---
 
-   - Create a new markdown file in `/src/content/blog/`
-   - Include proper frontmatter (title, description, pubDate, etc.)
-   - Format dates in ISO-8601 format: `YYYY-MM-DDTHH:MM:SS+HH:MM`
-   - Format tags as arrays: `tags: ["tag1", "tag2"]`
+# Content here
+```
 
-2. **Modifying site configuration**:
+### Customizing Site Settings
 
-   - Edit `/src/consts.ts` for global site constants
+- General site constants → `src/consts.ts` (SITE object)
+- Navigation links → `NAV_LINKS` array in consts.ts
+- Social media links → `SOCIAL_LINKS` and `ICON_MAP` arrays
 
-3. **Styling changes**:
+### Styling Changes
 
-   - Edit files in `/src/styles/` for global styling
-   - Use Tailwind classes in component templates for component-specific styling
+- Global styles: Files in `/src/styles/` using Tailwind classes
+- Component-specific: Use Tailwind utility classes directly in `.astro` components
 
-4. **Layout changes**:
+### Layout Changes
 
-   - Modify the appropriate layout files in `/src/layouts/`
+- Main layout template: `src/layouts/Layout.astro`
+- Blog post layout: `src/layouts/BlogPostLayout.astro`
+- About page: `src/layouts/AboutLayout.astro`
 
-5. **Fixing broken images**:
+## DEPENDENCIES
 
-   - Blog posts reference images in the `/public/assets/img/` directory structure
-   - The original files can be found in `/temp-repos/steipete.com/assets/img/`
-   - Images must be copied to the matching public directory structure
-   - Fixed images should be committed to the repository
-   - Use `find` command to locate the original images
-   - Common image paths follow the pattern: `/assets/img/YEAR/POST-NAME/IMAGE.jpg`
+| Package | Version | Purpose |
+|---------|---------|---------|
+| astro | ^5.16.6 | Site framework |
+| @astrojs/mdx | ^4.3.13 | MDX support |
+| @astrojs/react | ^4.4.2 | React integration |
+| @astrojs/rss | ^4.0.14 | RSS feed generation |
+| @astrojs/sitemap | ^3.6.0 | Sitemap management |
+| @tailwindcss/vite | ^4.1.18 | Tailwind CSS processing |
+| react | ^19.2.3 | React 19 |
+| pagefind | ^1.4.0 | Search engine |
+| sharp | ^0.34.5 | Image processing |
+| satori | ^0.18.3 | SVG/React rendering for OG images |
 
-6. **Dependency Updates**:
-   - Always use proper tooling to check for latest versions:
+### Dev Dependencies
+- **@biomejs/biome** - Linter/formatter with auto-fix capabilities
+- **husky + lint-staged** - Git hooks for pre-commit quality checks
+- **commitizen** - Conventional commit hooks via `cz` CLI
 
-     ```bash
-     # Check all outdated dependencies
-     npm outdated
+## DEVELOPMENT NOTES
 
-     # Check latest version of a specific package
-     npm view astro version
-     npm view react version
-
-     # Update all dependencies to latest
-     npm update --latest
-     ```
-
-   - Test thoroughly after updating dependencies
-   - If a build fails after updates, diagnose the specific issue and FIX it properly
-   - NEVER resort to downgrading as a solution
-
-7. **Updating CHANGELOG.md**:
-
-   - Update CHANGELOG.md with the changes you made
-   - Use the proper format for the changelog
-   - Add the changes to the appropriate section
-   - The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
-
-## Tech Stack
-
-- **Astro** (latest version) - Main framework
-- **TailwindCSS** - For styling
-- **React** - For interactive components (v18.2.0)
-- **MDX** - For enhanced markdown support
+- Posts are organized in `/src/content/blog/YYYY/` directories
+- Images are stored in `/public/assets/img/YYYY/POSTNAME/` structure
+- Build output goes to `/dist/` directory
+- Theme toggle supports light/dark mode (CSS variables)
+- Analytics: Vercel speed insights + analytics via @vercel/analytics
+- SEO: Sitemap with priority rules based on page type
+- PWA enabled with manifest and offline support

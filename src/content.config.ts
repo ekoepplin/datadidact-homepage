@@ -4,8 +4,11 @@ import { SITE } from "@/config";
 
 export const BLOG_PATH = "src/content/blog";
 
+// Resolve base from config location so the loader sees each file once (avoids duplicate-id warnings)
+const blogBase = new URL("content/blog/", import.meta.url);
+
 const blog = defineCollection({
-  loader: glob({ pattern: "**/[^_]*.{md,mdx}", base: `./${BLOG_PATH}` }),
+  loader: glob({ pattern: "**/[^_]*.{md,mdx}", base: blogBase }),
   schema: ({ image }) =>
     z.object({
       author: z.string().default(SITE.author),
