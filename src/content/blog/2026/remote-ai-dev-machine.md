@@ -91,7 +91,7 @@ Create a systemd override at `/etc/systemd/system/ollama.service.d/override.conf
 ```ini
 [Service]
 Environment="OLLAMA_HOST=0.0.0.0"
-Environment="OLLAMA_CONTEXT_LENGTH=131072"
+Environment="OLLAMA_NUM_CTX=131072"
 ```
 
 ```bash
@@ -131,7 +131,7 @@ for the Blackwell target:
 
 ```bash
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120" \
-  uv pip install --no-build-isolation-package vllm vllm
+  uv pip install --no-build-isolation-package vllm
 ```
 
 Build times are measured in tens of minutes per iteration — worth it once it compiles.
@@ -139,9 +139,18 @@ Build times are measured in tens of minutes per iteration — worth it once it c
 Running a compressed (AWQ 4-bit) model efficiently on new GPU hardware requires
 low-level kernels that have been compiled specifically for that GPU. The Blackwell chip
 is new enough that those kernels didn't exist yet in mainline vLLM — which is where
-[TurboQuant](https://github.com/mitkox/vllm-turboquant) comes in.
+TurboQuant comes in.
+
+[TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
+is a quantization algorithm from Google Research, published at ICLR 2026 just days before
+this post. It compresses KV cache vectors down to 3 bits — a 6x memory reduction — without
+fine-tuning or accuracy loss, using a two-stage approach: polar coordinate rotation to
+capture structure, followed by a 1-bit error correction pass. On H100s Google reports up
+to 8x faster attention computation.
+
 [Mitko Vasilev](https://www.linkedin.com/posts/ownyourai_i-stayed-up-till-2-am-finished-turboquant-activity-7443239891074953216-Y5mT)
-stayed up until 2 AM to sort this out and then put the whole thing on GitHub. Without
+took that algorithm and brought it to [vLLM](https://github.com/mitkox/vllm-turboquant)
+with Blackwell GPU support — staying up until 2 AM to sort it out. Without
 his repo, this section would end with "I gave up." That kind of quiet infrastructure
 work is what actually makes this stuff usable — so thanks Mitko.
 
@@ -198,6 +207,8 @@ python -m vllm.entrypoints.openai.api_server \
   --config "${PROJECT_DIR}/service/utils/vllm-config.yaml" "$@"
 ```
 
+*(Snippet — the full script also exports `LD_LIBRARY_PATH` and `PYTORCH_ALLOC_CONF` for CUDA compatibility.)*
+
 One operational note: startup takes several minutes. The model loads into VRAM and
 then CUDA compiles computation graphs for each sequence length. Start vLLM in a tmux
 window and let it finish before pointing clients at it.
@@ -253,18 +264,19 @@ there. Set it to your Ollama or vLLM endpoint and the rest of Claude Code — fi
 reading, subagents, tool calls, memory — works exactly as normal. No code changes,
 no plugins, no proxy middleware.
 
-`ANTHROPIC_AUTH_TOKEN` (for Ollama) and `ANTHROPIC_API_KEY` (for vLLM) are set to
-dummy values because both servers accept any token.
+`ANTHROPIC_AUTH_TOKEN` is set to a dummy value — both Ollama and vLLM accept any token.
 
 Add these wrappers to `~/.zshrc`:
 
 ```bash
-OLLAMA_DEFAULT_MODEL="qwen3-coder-next"
+LOCAL_DEFAULT_MODEL="qwen3-coder-next"
 
 # Claude Code via Ollama on the ZGX — no Anthropic API calls
 claude-zgx() {
-  local model="$OLLAMA_DEFAULT_MODEL"
-  [[ -n "$1" && "$1" != -* ]] && { model="$1"; shift; }
+  local model="$LOCAL_DEFAULT_MODEL"
+  if [[ -n "$1" && "$1" != -* ]]; then
+    model="$1"; shift
+  fi
   ANTHROPIC_AUTH_TOKEN=ollama \
   ANTHROPIC_BASE_URL=http://localhost:11434 \
     claude --model "$model" "$@"
@@ -272,14 +284,10 @@ claude-zgx() {
 
 # Claude Code via vLLM on the ZGX — no Anthropic API calls
 claude-vllm() {
+  ANTHROPIC_AUTH_TOKEN=vllm \
   ANTHROPIC_BASE_URL=http://localhost:8000 \
-  ANTHROPIC_API_KEY=dummy \
-  ANTHROPIC_DEFAULT_OPUS_MODEL=qwen \
-  ANTHROPIC_DEFAULT_SONNET_MODEL=qwen \
-  ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen \
-    claude "$@"
+    claude --model "${1:-qwen}" "${@:2}"
 }
-
 ```
 
 Daily workflow: `ssh -N -f HP-ZGX` to bring up the tunnel in the background, then `claude-zgx` in
@@ -331,10 +339,12 @@ in `LocalForward` is what makes both ports reachable from inside the container �
 }
 ```
 
-The `.claude` bind mount carries over your Claude Code config, memory, history, and
-authentication — no need to re-authenticate or reconfigure inside the container.
-`~/.claude.json` carries the auth token and first-run config, which skips the login
-and theme prompts on startup.
+*(Simplified — project-specific env vars and VS Code customizations omitted.)*
+
+The `.claude` bind mount carries over your Claude Code config, memory, and history.
+`~/.claude.json` carries first-run preferences (theme, UI setup), so the container
+starts clean without any setup prompts. For local models there's no login flow —
+Claude Code runs as soon as `ANTHROPIC_BASE_URL` points at the right endpoint.
 
 `"remoteUser": "node"` matters: Claude Code refuses `--dangerously-skip-permissions`
 when running as root, and the default Docker user is root.
@@ -375,15 +385,15 @@ The aliases bake in `--dangerously-skip-permissions` and point at the right
 # Via Ollama (always-on, lower throughput)
 claude-zgx                          # interactive, default model
 claude-zgx qwen3.5:35b              # interactive, specific model
-claude-zgx -p "refactor this file"  # non-interactive, runs to completion
+claude-zgx -r "refactor this file"  # non-interactive, runs to completion
 
 # Via vLLM (start-vllm must be running on ZGX first)
 claude-vllm                         # interactive, default model (qwen)
-claude-vllm -p "write tests"        # non-interactive, runs to completion
+claude-vllm -r "write tests"        # non-interactive, runs to completion
 ```
 
-The `-p` flag (`--print`) is a non-interactive mode: Claude Code runs the prompt, completes the
-task, and exits — useful for scripting or piping into CI.
+The `-r` flag triggers non-interactive mode: the wrapper passes `--print` to Claude Code, which
+runs the prompt, completes the task, and exits — useful for scripting or piping into CI.
 
 `--dangerously-skip-permissions` removes all tool approval prompts — file reads, shell
 commands, edits. It's appropriate here because the container is the blast radius:
@@ -418,7 +428,7 @@ re-attaches to) a structured tmux session:
 - `ollama` — Ollama shell
 - `shell` — clean working shell
 
-The Ansible playbook and vLLM config referenced in this post are available on request — feel free to reach out if you want to adapt them to different hardware.
+The Ansible playbook, vLLM config, and devcontainer referenced in this post will be on GitHub shortly.
 
 ---
 
