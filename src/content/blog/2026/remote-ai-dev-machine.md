@@ -51,8 +51,7 @@ Claude Code (client)              Ollama  :11434 (systemd)
 ```
 
 This post covers the setup end-to-end: Ollama, vLLM, the SSH tunnel, shell wrappers
-for Claude Code, and a devcontainer that makes it fully reproducible — including
-`--dangerously-skip-permissions`.
+for Claude Code, and a devcontainer — including `--dangerously-skip-permissions`.
 
 ## Why Bother?
 
