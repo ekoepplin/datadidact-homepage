@@ -121,11 +121,8 @@ python -m venv .venv && source .venv/bin/activate
 pip install vllm
 ```
 
-On ARM64 Blackwell it's a different story. Even though vLLM now ships aarch64 wheels,
-those prebuilds don't cover the Blackwell GPU architecture — so you're building from
-source. The CUDA kernels need to target the right GPU explicitly. The key flags are
-`--no-build-isolation-package` for uv and `CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120"`
-for the Blackwell target:
+On ARM64 Blackwell it's a different story — the standard prebuilt packages don't support
+this GPU yet, so you build from source. One extra flag tells the build which GPU to target:
 
 ```bash
 CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120" \
