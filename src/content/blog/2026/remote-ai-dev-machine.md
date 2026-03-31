@@ -101,12 +101,11 @@ sudo systemctl daemon-reload && sudo systemctl restart ollama
 Then pull the model:
 
 ```bash
-ollama pull qwen3-coder-next   # ~52 GB, Qwen3.5 hybrid architecture
+ollama pull qwen3-coder-next   # ~52 GB, Qwen3-Next architecture
 ```
 
-`qwen3-coder-next` is a MoE model — only ~3B parameters are active per token despite
-the full model being much larger. It fits in memory with plenty of room for a 128 k
-KV cache and runs well for code-heavy workloads.
+`qwen3-coder-next` is a MoE model — 80B total parameters, with only ~3B active per token.
+It fits in memory with plenty of room for a 128 k KV cache and runs well for code-heavy workloads.
 
 ---
 
@@ -186,11 +185,12 @@ port: 8000
 
 A few things here worth calling out:
 
-- `tool_call_parser: qwen3_xml` — Qwen3.5 uses an XML-style tool call format. Using
-  `hermes` or the default silently breaks tool use.
-- `enable_thinking: false` — Qwen3 models have a thinking/reasoning mode enabled by
-  default that narrates its own chain of thought. For Claude Code use, this wastes
-  tokens on output you don't need.
+- `tool_call_parser: qwen3_xml` — Qwen3.5 uses an XML-style tool call format (`<function_calls>`
+  tags). Using `hermes` or the default silently breaks tool use. (`qwen3_coder` is an
+  alternative parser for this model family; `qwen3_xml` works and is what this config uses.)
+- `enable_thinking: false` — larger Qwen3 models (including this 35B) have a
+  thinking/reasoning mode enabled by default that narrates chain of thought. For Claude
+  Code use, this wastes tokens on output you don't need.
 - The AWQ 4-bit model occupies ~22 GB of VRAM; `gpu_memory_utilization: 0.70`
   gives vLLM a total budget of ~90 GB (70% of 128 GB), leaving ~68 GB for the
   KV cache — enough for around 11 concurrent full-context requests at 256 k.
