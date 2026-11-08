@@ -1,5 +1,5 @@
 ---
-title: "Data Contracts in dbt: What Actually Gets Enforced"
+title: "Data Contracts with dbt and ODCS: Promises That Actually Run"
 pubDatetime: 2026-11-05T10:00:00+01:00
 description: "Why data contracts matter: they build trust between the people who produce data and the people who use it, and they quietly give you a metadata repository on the side. From dbt model contracts to the Open Data Contract Standard, with a runnable example you can break on purpose."
 heroImage: /assets/img/2026/data-contracts/hero.png
