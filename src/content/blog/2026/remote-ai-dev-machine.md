@@ -1,454 +1,266 @@
 ---
 title: "Local AI for Development: You Own Everything"
 pubDatetime: 2026-03-29T10:00:00+01:00
-description: "A weekend of setting up an HP ZGX workstation, bringing TurboQuant to life, and discovering that local AI for development is already here — no cloud, no vendor lock-in, run it from anywhere."
+modDatetime: 2026-11-23T10:00:00+01:00
+description: "How I run coding agents against my own GPU server: the model runs on the server, the Mac is only the interface. Rewritten in November 2026 as a step-by-step setup you can rebuild on your own hardware."
 heroImage: /assets/img/2026/remote-ai-dev-machine/local_models.png
-tags: ["llm", "ollama", "vllm", "devcontainers", "ssh", "claude-code", "selfhosted"]
+tags: ["llm", "vllm", "ssh", "tailscale", "claude-code", "selfhosted"]
 ---
 
-Last weekend I got a new HP ZGX AI Studio and spent the weekend turning it into a remote
-AI dev machine — getting Ollama running, getting a properly quantized 35B model serving
-fast enough to actually use, and wiring it all up so Claude Code on my Mac talks to the
-GPU in the other room without knowing it's remote. I also tried to get
-[TurboQuant](https://github.com/mitkox/vllm-turboquant) working — a custom vLLM fork
-that makes compressed models run efficiently on the new GPU hardware. That part got messy:
-build failures, missing Python packages, CUDA compilation times measured in cups of
-coffee, and a 52 GB model download that reset twice.
+> **Updated November 2026.** The first version of this post (March 2026) described a weekend
+> of Ollama, a custom vLLM build and TurboQuant. All of that is gone. This version describes
+> the setup as I run it today, step by step, so you can rebuild it on your own server.
+> Part 2, [Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models), builds on it.
 
-But it worked. And the conclusion I walked away with is worth stating plainly: **local
-AI for development is already here, and there's no meaningful catch.** No API key. No
-cloud bill. No code leaving your machine. You own everything — the model, the data,
-the whole setup — and it runs anywhere, including offline.
+In March I got an HP ZGX AI Studio and spent a weekend turning it into a model server for
+coding agents. It worked, but it was a pile of moving parts: Ollama next to vLLM, a vLLM fork
+built from source, two open ports. Eight months later the setup is smaller, and every piece
+has a reason. This post is the version I would have wanted back then.
 
-## What This Is
+## The picture
 
-First things first: Claude Code isn't locked to Anthropic's API. It sends requests in
-Anthropic's format, and both Ollama and vLLM now support that same format — so you can
-point Claude Code at either one and it just works. Point it at a local model server and
-you get the full experience: file editing, subagents, tool use, memory, the works. All
-running on your own hardware, nothing leaving your network.
-
-I'll be honest — Claude Code is genuinely great. The agentic stuff, the way it handles
-multi-step tasks, the tool use — it's the best AI coding experience I've used. And
-running it against local models makes it even better in a way that's hard to describe
-until you try it. No latency spikes, no watching a cost meter, no wondering what's
-happening to your code on someone else's server. It just runs.
-
-The hardware I'm using is an HP ZGX AI Studio — NVIDIA GB10 (Grace Blackwell chip), 128 GB
-of shared CPU/GPU memory, Ubuntu 24.04. It lives on my home network, runs Ollama as a
-background service and vLLM when I need more throughput. One SSH connection from my Mac
-forwards the ports, and Claude Code just talks to `localhost` without knowing the GPU is
-in the next room.
+The model runs on the server. The Mac only runs the agent: it reads and edits my files and
+sends prompts through an SSH tunnel. Nothing on the Mac needs a GPU.
 
 ```
-Your Mac                          HP ZGX (remote)
-─────────────────                 ──────────────────────────
-Claude Code (client)              Ollama  :11434 (systemd)
-  - runs locally        SSH        vLLM    :8000  (manual)
-  - reads local files   tunnel    NVIDIA GB10 GPU
-  - edits your code    ────────►  128GB unified memory
-  - sends prompts (local only)
+Mac (interface only)                      GPU server (HP ZGX)
+──────────────────────                    ─────────────────────────────
+Claude Code / Pi                          one model server, port 8000
+  reads and edits local files   SSH       bound to 127.0.0.1 only
+  sends prompts to              tunnel    speaks OpenAI + Anthropic API
+  localhost:8000  ────────────────────►   NVIDIA GB10, 128 GB unified memory
 ```
 
-This post covers the setup end-to-end: Ollama, vLLM, the SSH tunnel, shell wrappers
-for Claude Code, and a devcontainer — including `--dangerously-skip-permissions`.
+Part 2 adds the cloud: Claude (via subscription or API) next to the local model.
 
-## Why Bother?
+## What you need
 
-Claude Code in agentic mode is chatty. It spawns subagents, reads files, rewrites context,
-iterates. A lot of that is mechanical work that racks up API costs quickly. Running it
-locally is cheaper for that kind of volume, and your code stays on your own machine.
+- **A Linux server with an NVIDIA GPU** and enough memory for the model. Mine: HP ZGX AI
+  Studio, NVIDIA GB10 (Grace Blackwell), 128 GB unified CPU/GPU memory, Ubuntu 24.04.
+- **Docker with the NVIDIA Container Toolkit** on the server
+  (`sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`).
+- **A laptop with SSH** and the agent: [Claude Code](https://code.claude.com) and/or
+  [Pi](https://github.com/earendil-works/pi).
 
-The honest catch is hardware. Most laptops can only run small models, and small models
-aren't great for coding tasks. A machine with 128 GB of memory helps a lot — you can
-run something like a 35B model with a decent context window and not feel the squeeze.
-That's the setup I have, and it's what made this feel viable rather than a fun experiment.
+If your hardware differs, the steps stay the same. Only the model you can fit changes.
 
-I'll be upfront: I went in skeptical. I expected it to feel like a downgrade — slower
-responses, worse output, more friction. It wasn't. I was genuinely surprised how well it
-worked once everything was connected. Your mileage may vary depending on the model you
-pick, but for day-to-day coding work it held up fine.
+## Step 1: one model server on the server
 
----
+Rule one: **one backend at a time, always on port 8000.** The GB10 has a single memory pool,
+so two large models do not fit side by side anyway. Every client points at port 8000, so
+switching models never means changing a client.
 
-## Serving with Ollama
+What the server must do, whatever software you use:
 
-Ollama is the right starting point — one-command install, systemd service out of the
-box, built-in model library, and an OpenAI-compatible API on port 11434.
+| Requirement | Why |
+|---|---|
+| Serves the **Anthropic Messages API** (`/v1/messages`) | Claude Code speaks it natively. vLLM, SGLang and llama.cpp all do |
+| Serves the **OpenAI chat API** (`/v1/chat/completions`) | Pi and most other agents use it. Same port |
+| **Tool calling on**, with the parser for your model | Agents work through tool calls. The wrong parser fails silently: the model "calls" a tool and nothing happens |
+| **Context window of 64k tokens or more** | Claude Code's minimum. My backends run 256k |
+| **Port bound to 127.0.0.1** | The API has no authentication. See step 2 |
+
+These are the four backends I switch between. Speeds are decode rates measured on the ZGX
+(256 max tokens, median of 3):
+
+| Model | Engine | Decode tok/s | Measured |
+|---|---|---|---|
+| Qwen3.8-Flash-Next 125B-A5B INT4 | vLLM | 48–80 | 2026-09-13 |
+| Qwen3.6-35B-A3B NVFP4 + MTP | vLLM | 106–140 | 2026-09-14 |
+| Qwen3.8-27B NVFP4 + DSpark | SGLang | 15.8–49.8 | 2026-09-14 |
+| Flint NVFP4 GGUF | llama.cpp | 96.6–102.6 | 2026-10-22 |
+
+Speed is not quality. How well each one handles tool calls in long agent sessions, I have not
+measured yet.
+
+### The one I use: Qwen3.8-Flash-Next
+
+Flash-Next is the model behind all tests in part 2. Its serving recipe is a public repo with
+tuned defaults, so you do not have to work out vLLM flags yourself:
 
 ```bash
-curl -fsSL https://ollama.com/install.sh | sh
+# on the server
+git clone https://github.com/azampatti/Qwen3.8-Flash-Next-Int4-FAST.git ~/repos/Qwen3.8-Flash-Next-Int4-FAST
+cd ~/repos/Qwen3.8-Flash-Next-Int4-FAST
+./setup.sh      # builds the Docker image, downloads the ~118 GiB checkpoint
+PORT=8000 ./serve.sh -d   # starts vLLM on port 8000, detached
 ```
 
-Two things need changing from the defaults: Ollama must listen on all interfaces
-(not just localhost) so the SSH tunnel can reach it, and the context window needs to
-be expanded. Ollama's default of 4 096 tokens is too small for Claude Code; the minimum
-for agentic use is around 64 k, and 128 k is the comfortable setting.
-
-Create a systemd override at `/etc/systemd/system/ollama.service.d/override.conf`:
-
-```ini
-[Service]
-Environment="OLLAMA_HOST=0.0.0.0"
-Environment="OLLAMA_NUM_CTX=131072"
-```
+Startup takes about 5 minutes (loading 71 GiB of weights, then CUDA graph capture). It is ready
+when this answers:
 
 ```bash
-sudo systemctl daemon-reload && sudo systemctl restart ollama
+curl -s localhost:8000/v1/models   # lists qwen3.8-flash-next-a5b
 ```
 
-Then pull the model:
+**One change before you use it:** check the `docker run` line in `serve.sh` and make sure the
+port is published as `-p 127.0.0.1:8000:8000`, not `-p 8000:8000`. Mine needed that edit, and a
+`git pull` undoes it. Docker's port rules bypass `ufw`, so a firewall does not save you here.
+
+Verify from the server that nothing but SSH listens beyond loopback:
 
 ```bash
-ollama pull qwen3-coder-next   # ~52 GB, Qwen3-Next architecture
+ss -tlnH | awk '{print $4}' | grep -v -E '^(127\.|\[::1\])'   # should show only :22
 ```
 
-`qwen3-coder-next` is a MoE model — 80B total parameters, with only ~3B active per token.
-It fits in memory with plenty of room for a 128 k KV cache and runs well for code-heavy workloads.
+## Step 2: reach the server from anywhere
 
----
-
-## Serving with vLLM
-
-vLLM is worth the extra setup when you need throughput, want a specific
-HuggingFace-hosted model, or plan to run multiple Claude Code agents concurrently
-against the same endpoint.
-
-On most Linux machines with a standard NVIDIA GPU, install is straightforward:
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install vllm
-```
-
-On ARM64 Blackwell it's a different story — the standard prebuilt packages don't support
-this GPU yet, so you build from source. One extra flag tells the build which GPU to target:
-
-```bash
-CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=120" \
-  uv pip install --no-build-isolation-package vllm
-```
-
-Build times are measured in tens of minutes per iteration — worth it once it compiles.
-
-Running a compressed (AWQ 4-bit) model efficiently on new GPU hardware requires
-low-level kernels that have been compiled specifically for that GPU. The Blackwell chip
-is new enough that those kernels didn't exist yet in mainline vLLM — which is where
-TurboQuant comes in.
-
-[TurboQuant](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
-is a quantization algorithm from Google Research, published at ICLR 2026 just days before
-this post. It compresses KV cache vectors down to 3 bits — a 6x memory reduction — without
-fine-tuning or accuracy loss, using a two-stage approach: polar coordinate rotation to
-capture structure, followed by a 1-bit error correction pass. On H100s Google reports up
-to 8x faster attention computation.
-
-[Mitko Vasilev](https://www.linkedin.com/posts/ownyourai_i-stayed-up-till-2-am-finished-turboquant-activity-7443239891074953216-Y5mT)
-took that algorithm and brought it to [vLLM](https://github.com/mitkox/vllm-turboquant)
-with Blackwell GPU support — staying up until 2 AM to sort it out. Without
-his repo, this section would end with "I gave up." That kind of quiet infrastructure
-work is what actually makes this stuff usable — so thanks Mitko.
-
-Before starting vLLM, it's worth downloading the model to the local HuggingFace cache
-first. vLLM can pull models on startup, but if your connection drops mid-transfer you're
-back to square one — and these models are large. The HuggingFace CLI handles resumable
-downloads cleanly:
-
-```bash
-pip install huggingface_hub   # if not already installed
-hf download cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit
-```
-
-Once it's cached locally, vLLM picks it up from disk — no network required at serve time,
-which is also why the start script sets `HF_HUB_OFFLINE=1`.
-
-The serving config lives in a YAML file and is passed to vLLM at startup:
-
-```yaml
-# vllm-config.yaml
-model: cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit
-served_model_name: qwen
-max_model_len: 262144          # 256k context
-max_num_seqs: 64               # concurrent sessions
-gpu_memory_utilization: 0.70
-enable_auto_tool_choice: true
-tool_call_parser: qwen3_xml    # required for Qwen3.5
-default_chat_template_kwargs:
-  enable_thinking: false       # saves tokens for Claude Code
-host: 0.0.0.0
-port: 8000
-```
-
-A few things here worth calling out:
-
-- `tool_call_parser: qwen3_xml` — Qwen3.5 uses an XML-style tool call format (`<function_calls>`
-  tags). Using `hermes` or the default silently breaks tool use. (`qwen3_coder` is an
-  alternative parser for this model family; `qwen3_xml` works and is what this config uses.)
-- `enable_thinking: false` — larger Qwen3 models (including this 35B) have a
-  thinking/reasoning mode enabled by default that narrates chain of thought. For Claude
-  Code use, this wastes tokens on output you don't need.
-- The AWQ 4-bit model occupies ~22 GB of VRAM; `gpu_memory_utilization: 0.70`
-  gives vLLM a total budget of ~90 GB (70% of 128 GB), leaving ~68 GB for the
-  KV cache — enough for around 11 concurrent full-context requests at 256 k.
-
-The start script activates the venv and hands off to vLLM:
-
-```bash
-#!/bin/bash
-# /usr/local/bin/start-vllm
-PROJECT_DIR="${VLLM_PROJECT_DIR:-$HOME/repos/hp-zgx-workflow}"
-source "${PROJECT_DIR}/.venv/bin/activate"
-export HF_HUB_OFFLINE=1
-python -m vllm.entrypoints.openai.api_server \
-  --config "${PROJECT_DIR}/service/utils/vllm-config.yaml" "$@"
-```
-
-*(Snippet — the full script also exports `LD_LIBRARY_PATH` and `PYTORCH_ALLOC_CONF` for CUDA compatibility.)*
-
-One operational note: startup takes several minutes. The model loads into VRAM and
-then CUDA compiles computation graphs for each sequence length. Start vLLM in a tmux
-window and let it finish before pointing clients at it.
-
-As a rough performance reference on this hardware: 36.5 tok/s single-stream, around
-338 tok/s aggregate at 64 concurrent sequences — enough headroom for several parallel
-Claude Code subagent sessions running simultaneously.
-
----
-
-## SSH Tunnel from the Mac
-
-A single SSH connection forwards both inference ports. Add this to `~/.ssh/config`:
-
-```
-Host HP-ZGX
-    HostName 192.168.178.103
-    User ekoepplin
-    IdentityFile ~/.ssh/id_ed25519
-    LocalForward *:11434 localhost:11434
-    LocalForward *:8000 localhost:8000
-    ServerAliveInterval 60
-```
-
-The `*:` prefix on `LocalForward` binds the local port on all interfaces, not just
-loopback. This matters for the devcontainer setup later.
-
-Open the tunnel:
-
-```bash
-ssh -N -f HP-ZGX   # runs in the background; ports are now live locally
-```
-
-Verify it's working:
-
-```bash
-curl http://localhost:11434/api/tags    # should list Ollama models
-curl http://localhost:8000/v1/models   # should list the vLLM model
-```
-
-The most common issue is a stale tunnel from a previous session holding the port:
-
-```bash
-lsof -i :11434 -i :8000   # find the stale process, kill it, reconnect
-```
-
----
-
-## Shell Functions for Claude Code
-
-Claude Code checks `ANTHROPIC_BASE_URL` on startup and routes all inference calls
-there. Set it to your Ollama or vLLM endpoint and the rest of Claude Code — file
-reading, subagents, tool calls, memory — works exactly as normal. No code changes,
-no plugins, no proxy middleware.
-
-`ANTHROPIC_AUTH_TOKEN` is set to a dummy value — both Ollama and vLLM accept any token.
-
-Add these wrappers to `~/.zshrc`:
-
-```bash
-LOCAL_DEFAULT_MODEL="qwen3-coder-next"
-
-# Claude Code via Ollama on the ZGX — no Anthropic API calls
-claude-zgx() {
-  local model="$LOCAL_DEFAULT_MODEL"
-  if [[ -n "$1" && "$1" != -* ]]; then
-    model="$1"; shift
-  fi
-  ANTHROPIC_AUTH_TOKEN=ollama \
-  ANTHROPIC_BASE_URL=http://localhost:11434 \
-    claude --model "$model" "$@"
-}
-
-# Claude Code via vLLM on the ZGX — no Anthropic API calls
-claude-vllm() {
-  ANTHROPIC_AUTH_TOKEN=vllm \
-  ANTHROPIC_BASE_URL=http://localhost:8000 \
-    claude --model "${1:-qwen}" "${@:2}"
-}
-```
-
-Daily workflow: `ssh -N -f HP-ZGX` to bring up the tunnel in the background, then `claude-zgx` in
-your terminal. Every prompt, subagent spawn, and tool call goes to the ZGX — zero Anthropic
-API traffic. Switch to `claude-vllm` for the higher-throughput vLLM backend.
-
----
-
-## Devcontainers
-
-A devcontainer extends the same idea to a fully portable environment: Claude Code
-running inside a container, pointed at local models via the SSH tunnel, with
-`--dangerously-skip-permissions` enabled — and the whole thing checked into the repo
-so anyone who opens the project gets it for free.
-
-Both backends are reachable from inside the container. The network path is the same
-in both cases — only the port differs:
-
-```
-Devcontainer (Docker on Mac)
-    │  http://host.docker.internal:11434   (Ollama)
-    │  http://host.docker.internal:8000    (vLLM)
-    ▼
-Mac host  (SSH tunnel bound on *:11434 and *:8000)
-    │  SSH LocalForward
-    ▼
-HP ZGX  (Ollama :11434 / vLLM :8000)
-```
-
-`host.docker.internal` is Docker's name for the Mac host. The `*:` wildcard binding
-in `LocalForward` is what makes both ports reachable from inside the container — a
-`127.0.0.1` binding would not be.
-
-**`.devcontainer/devcontainer.json`:**
+I reach the ZGX over [Tailscale](https://tailscale.com), at home and away, with no port open on
+the router. The tailnet policy allows SSH and nothing else:
 
 ```json
 {
-  "name": "Claude Code Dev",
-  "build": { "dockerfile": "Dockerfile", "context": "." },
-  "remoteEnv": {
-    "OLLAMA_DEFAULT_MODEL": "qwen3.5:4b",
-    "VLLM_DEFAULT_MODEL": "qwen"
-  },
-  "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/node/.claude,type=bind",
-    "source=${localEnv:HOME}/.claude.json,target=/home/node/.claude.json,type=bind"
-  ],
-  "remoteUser": "node"
+  "tagOwners": { "tag:gpu": ["autogroup:admin"] },
+  "grants": [
+    { "src": ["autogroup:member"], "dst": ["tag:gpu"], "ip": ["tcp:22"] }
+  ]
 }
 ```
 
-*(Simplified — project-specific env vars and VS Code customizations omitted.)*
+On the server: `sudo tailscale up --advertise-tags=tag:gpu`. Tagged devices have key expiry
+off, so the server does not drop out. On a home LAN without Tailscale, the rest of this post
+works the same with the server's LAN address.
 
-The `.claude` bind mount carries over your Claude Code config, memory, and history.
-`~/.claude.json` carries first-run preferences (theme, UI setup), so the container
-starts clean without any setup prompts. For local models there's no login flow —
-Claude Code runs as soon as `ANTHROPIC_BASE_URL` points at the right endpoint.
+Then one SSH config entry on the Mac carries the tunnel:
 
-`"remoteUser": "node"` matters: Claude Code refuses `--dangerously-skip-permissions`
-when running as root, and the default Docker user is root.
-
-**`Dockerfile` (abridged):**
-
-```dockerfile
-FROM node:20-slim
-
-RUN apt-get update && apt-get install -y curl git zsh \
-    && rm -rf /var/lib/apt/lists/*
-
-USER node
-ENV HOME=/home/node
-
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-# zsh-autosuggestions, zsh-syntax-highlighting ...
-
-USER root
-RUN npm install -g @anthropic-ai/claude-code
-COPY claude-aliases.sh /etc/claude-aliases.sh
-RUN echo '. /etc/claude-aliases.sh' >> /home/node/.zshrc
-
-USER node
-WORKDIR /workspace
+```ssh-config
+Host gpu
+    HostName <your-server>.<your-tailnet>.ts.net
+    User <you>
+    IdentityFile ~/.ssh/id_ed25519
+    LocalForward 127.0.0.1:8000 localhost:8000
+    ControlMaster auto
+    ControlPath ~/.ssh/cm-%r@%h:%p
+    ControlPersist 12h
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+    ExitOnForwardFailure yes
 ```
-
-The base image is `node:20-slim` because Claude Code is distributed as an npm package.
-The aliases file contains the same `claude-zgx` / `claude-vllm`
-functions from above, with `localhost` replaced by `host.docker.internal`.
-
-**Running Claude Code inside the container:**
-
-The aliases bake in `--dangerously-skip-permissions` and point at the right
-`host.docker.internal` port — you don't pass any flags manually:
 
 ```bash
-# Via Ollama (always-on, lower throughput)
-claude-zgx                          # interactive, default model
-claude-zgx qwen3.5:35b              # interactive, specific model
-claude-zgx -r "refactor this file"  # non-interactive, runs to completion
-
-# Via vLLM (start-vllm must be running on ZGX first)
-claude-vllm                         # interactive, default model (qwen)
-claude-vllm -r "write tests"        # non-interactive, runs to completion
+ssh -fN gpu                         # tunnel in the background
+curl -s localhost:8000/v1/models    # now answers on the Mac
 ```
 
-The `-r` flag triggers non-interactive mode: the wrapper passes `--print` to Claude Code, which
-runs the prompt, completes the task, and exits — useful for scripting or piping into CI.
+What each part is for:
 
-`--dangerously-skip-permissions` removes all tool approval prompts — file reads, shell
-commands, edits. It's appropriate here because the container is the blast radius:
-mutations stay inside the container filesystem and the mounted workspace. The host is
-not exposed beyond what's explicitly mounted.
+- `LocalForward 127.0.0.1:8000`: the port opens on the Mac's loopback only. **My March post
+  used `*:8000`. Don't.** That hands the unauthenticated model API to everyone on whatever
+  Wi-Fi the Mac has joined.
+- `ControlMaster` / `ControlPersist`: later `ssh` calls reuse the connection, and
+  `ssh -O check gpu` tells you whether the tunnel is alive.
+- `ServerAlive*`: a dropped link is noticed in about 90 seconds instead of leaving a dead
+  tunnel that accepts connections and resets them.
+- `ExitOnForwardFailure`: if port 8000 is already taken on the Mac, `ssh` fails loudly instead
+  of connecting without a tunnel.
 
-If connectivity is unclear, the container includes diagnostic helpers:
+Use the full MagicDNS name as `HostName`. A short name may also resolve through your home
+router to the LAN address, and then `ssh` silently bypasses Tailscale.
+
+Keys only on the server, before you rely on this:
+`printf 'PasswordAuthentication no\nKbdInteractiveAuthentication no\n' | sudo tee /etc/ssh/sshd_config.d/10-keys-only.conf`
+and `sudo systemctl reload ssh` (test a second login before closing the first).
+
+## Step 3: check the server is fit for an agent
+
+A model list is not enough. An agent needs tool calls through the API it speaks. This request
+asks for a tool call through the Anthropic API, the way Claude Code does:
 
 ```bash
-check-ollama   # verifies DNS, TCP, lists models, prints env
-check-vllm     # same for port 8000
+curl -s localhost:8000/v1/messages -H 'Content-Type: application/json' -d '{
+  "model": "qwen3.8-flash-next-a5b", "max_tokens": 2048,
+  "tools": [{"name": "get_weather", "description": "Current weather for a city",
+             "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}],
+  "messages": [{"role": "user", "content": "What is the weather in Berlin? Use the tool."}]
+}' | jq '{stop_reason, call: [.content[] | select(.type == "tool_use") | .input]}'
 ```
 
-Each runs four steps: resolves `host.docker.internal`, checks TCP reachability, lists
-available models, and prints the active environment variables — with a checklist of
-what to fix if any step fails.
+Expected: `"stop_reason": "tool_use"` and `{"city": "Berlin"}`. If you get text instead, the
+tool parser is wrong or off.
 
----
+## Step 4: Claude Code against the server
 
-## Automation with Ansible
+Claude Code sends its requests to `ANTHROPIC_BASE_URL`. A shell function in `~/.zshrc` scopes
+the settings to one command, so a normal `claude` stays untouched:
 
-The full ZGX setup — DNS configuration, package installation, Ollama service, HuggingFace
-model downloads, vLLM virtualenv, shell configuration, tmux workspace — is automated via
-an Ansible playbook. The playbook runs locally on the ZGX after first boot and is
-idempotent, so re-running it is safe.
+```bash
+claude-local() {
+  local model=qwen3.8-flash-next-a5b
+  ANTHROPIC_BASE_URL=http://localhost:8000 \
+  ANTHROPIC_AUTH_TOKEN=local \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=$model \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=$model \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=$model \
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000 \
+  MAX_THINKING_TOKENS=2048 \
+  API_TIMEOUT_MS=3600000 \
+    claude --model $model "$@"
+}
+```
 
-One useful outcome of the playbook is a `tmux-workspace` command that creates (or
-re-attaches to) a structured tmux session:
+Each line has a reason:
 
-- `monitor` — `nvidia-smi` and `htop` side by side
-- `vllm` — ready to run `start-vllm`
-- `ollama` — Ollama shell
-- `shell` — clean working shell
+- `ANTHROPIC_AUTH_TOKEN`: any value, the server does not check it.
+- `ANTHROPIC_DEFAULT_*_MODEL`: `--model` only covers the main conversation. Background work
+  (titles, summaries, the auto-mode safety check) asks for the haiku tier by name, which your
+  server does not serve. These three map every tier onto your model.
+- `MAX_THINKING_TOKENS`: current Qwen models reason before answering. Uncapped, they
+  deliberate for minutes over trivial edits.
+- `API_TIMEOUT_MS`: long local generations outrun Claude Code's default stream timeout.
 
-The Ansible playbook, vLLM config, and devcontainer referenced in this post will be on GitHub shortly.
+If your server's context window is **smaller than 200k**, also set
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` to it. Claude Code does not know your model, assumes 200k,
+and would otherwise compact too late
+([docs](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id)).
 
----
+Then `cd` into a project and run `claude-local`. Every prompt, tool call and subagent goes to
+your server.
+
+## Step 5: Pi against the server
+
+Pi talks to the same port through the OpenAI API. Register the server once as a provider, for
+example with the `local-provider.ts` extension from the companion repo of part 2, which reads
+the model list from the server:
+
+```bash
+LOCAL_BASE_URL=http://localhost:8000/v1 pi -e ./extensions/local-provider.ts \
+  --model local/qwen3.8-flash-next-a5b
+```
+
+Part 2 is about what Pi adds: one session that uses Claude and the local model together.
+
+## Give the agent a sandbox
+
+A coding agent runs shell commands with your user's rights, local model or not. In one of my
+tests Flash-Next ran `pip install pytest` into my global Python without asking. Run agents in a
+container or at least a throwaway checkout, and never with credentials you would not hand to
+the model. My devcontainer, which also reaches port 8000 through `host.docker.internal`, is in
+[agentic-toolbox](https://github.com/ekoepplin/agentic-toolbox).
+
+## What changed since March
+
+| March 2026 | Now | Why |
+|---|---|---|
+| Ollama as an always-on service, next to vLLM | Removed | One server, one port. Ollama also kept listening openly on the server for five weeks after I stopped using it |
+| vLLM built from source, TurboQuant fork | Prebuilt Docker images per model | Standard pip vLLM crashes on the GB10 (sm_121). Images built for CUDA 13 run |
+| One model | Four backends, one at a time on port 8000 | Switching is a restart, not a client change |
+| SSH to a LAN address | Tailscale, SSH only | Works from anywhere, nothing open on the router |
+| Tunnel bound to `*` | Tunnel bound to `127.0.0.1` | `*` exposed the model to every network the Mac joined |
+| `enable_thinking: false` | Thinking on, capped at 2048 tokens | All four models reason before answering; the cap keeps it short |
 
 ## Tradeoffs
 
 | Concern | Reality |
 |---|---|
-| Network latency | LAN SSH adds ~1 ms; negligible compared to inference time |
-| Security | Ollama/vLLM bind to `localhost` on the ZGX; only reachable via authenticated SSH |
-| GPU contention | Ollama and vLLM both hold VRAM — run one at a time for 30B+ models |
-| vLLM startup | 5–15 min for model load + CUDA graph compilation — always start it in tmux |
-| Model disk space | `qwen3-coder-next` is 52 GB; the AWQ vLLM variant is 22 GB — plan accordingly |
-| IPv6 on large downloads | If HuggingFace downloads reset mid-transfer, disable IPv6 temporarily: `sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1` |
+| Hardware | The real entry cost. Flash-Next alone takes about 71 GiB for weights plus a 20 GB KV cache |
+| Startup | Minutes, not seconds: about 5 minutes for Flash-Next. Switching models means a restart |
+| Security | The model API has no authentication. Loopback binding plus SSH-only access is what protects it |
+| Quality | Fine for a lot of day-to-day work in my use. Tool-calling quality across long sessions is unmeasured |
+| Safety | The agent has a shell. Sandbox it |
 
----
+## Where this leaves me
 
-## Two Days Well Spent
-
-What started as "let me just get this machine set up" turned into a proper two-day rabbit
-hole — Ollama, vLLM, a custom vLLM fork, SSH tunnels, devcontainers, Ansible. More than I
-planned, but genuinely fun. There's something satisfying about getting all the pieces to
-click together, especially when the last piece is a 35B model actually running well on your
-own hardware.
-
-The thing that stuck with me most wasn't the setup itself — it was how good the output was.
-I went in expecting a compromise. I came out thinking local AI for coding is already there.
-Not "good enough if you squint." Actually good.
+Local AI for development is real: my code and prompts stay on hardware I own, there is no
+meter running, and the setup above has few enough parts that I can explain each one. What I no longer claim is that there is no catch. For refining a request,
+writing a plan and judging the result, I still want a frontier model. Part 2 shows how I
+combine both: [Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models).
