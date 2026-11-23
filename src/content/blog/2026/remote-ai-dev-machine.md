@@ -54,13 +54,13 @@ What the server must do, whatever software you use:
 
 | Requirement | Why |
 |---|---|
-| Serves the **Anthropic Messages API** (`/v1/messages`) | Claude Code speaks it natively. vLLM, SGLang and llama.cpp all do |
+| Serves the **Anthropic Messages API** (`/v1/messages`) | Claude Code speaks it natively. vLLM and SGLang both do |
 | Serves the **OpenAI chat API** (`/v1/chat/completions`) | Pi and most other agents use it. Same port |
 | **Tool calling on**, with the parser for your model | Agents work through tool calls. The wrong parser fails silently: the model "calls" a tool and nothing happens |
-| **Context window of 64k tokens or more** | Claude Code's minimum. My backends run 256k |
+| **Context window of 64k tokens or more** | The practical minimum for Claude Code. My backends run 256k |
 | **Port bound to 127.0.0.1** | The API has no authentication. See step 2 |
 
-These are the four backends I switch between. Speeds are decode rates measured on the ZGX
+These are the three backends I switch between. Speeds are decode rates measured on the ZGX
 (256 max tokens, median of 3):
 
 | Model | Engine | Decode tok/s | Measured |
@@ -68,7 +68,6 @@ These are the four backends I switch between. Speeds are decode rates measured o
 | Qwen3.8-Flash-Next 125B-A5B INT4 | vLLM | 48–80 | 2026-09-13 |
 | Qwen3.6-35B-A3B NVFP4 + MTP | vLLM | 106–140 | 2026-09-14 |
 | Qwen3.8-27B NVFP4 + DSpark | SGLang | 15.8–49.8 | 2026-09-14 |
-| Flint NVFP4 GGUF | llama.cpp | 96.6–102.6 | 2026-10-22 |
 
 Speed is not quality. How well each one handles tool calls in long agent sessions, I have not
 measured yet.
@@ -83,7 +82,7 @@ tuned defaults, so you do not have to work out vLLM flags yourself:
 git clone https://github.com/azampatti/Qwen3.8-Flash-Next-Int4-FAST.git ~/repos/Qwen3.8-Flash-Next-Int4-FAST
 cd ~/repos/Qwen3.8-Flash-Next-Int4-FAST
 ./setup.sh      # builds the Docker image, downloads the ~118 GiB checkpoint
-PORT=8000 ./serve.sh -d   # starts vLLM on port 8000, detached
+./serve.sh -d   # starts vLLM in the background, port 8000 by default
 ```
 
 Startup takes about 5 minutes (loading 71 GiB of weights, then CUDA graph capture). It is ready
@@ -100,7 +99,8 @@ port is published as `-p 127.0.0.1:8000:8000`, not `-p 8000:8000`. Mine needed t
 Verify from the server that nothing but SSH listens beyond loopback:
 
 ```bash
-ss -tlnH | awk '{print $4}' | grep -v -E '^(127\.|\[::1\])'   # should show only :22
+ss -tlnH | awk '{print $4}' | grep -v -E '^(127\.|\[::1\])'
+# expected: only :22, plus Tailscale's own listeners on tailscale0 (step 2)
 ```
 
 ## Step 2: reach the server from anywhere
@@ -117,7 +117,8 @@ the router. The tailnet policy allows SSH and nothing else:
 }
 ```
 
-On the server: `sudo tailscale up --advertise-tags=tag:gpu`. Tagged devices have key expiry
+Save the policy first, then on the server: `sudo tailscale up --advertise-tags=tag:gpu`
+(without the policy the tag is refused). Tagged devices have key expiry
 off, so the server does not drop out. On a home LAN without Tailscale, the rest of this post
 works the same with the server's LAN address.
 
@@ -219,8 +220,8 @@ your server.
 ## Step 5: Pi against the server
 
 Pi talks to the same port through the OpenAI API. Register the server once as a provider, for
-example with the `local-provider.ts` extension from the companion repo of part 2, which reads
-the model list from the server:
+example with the `local-provider.ts` extension from the companion repo of part 2 (published
+with part 2), which reads the model list from the server:
 
 ```bash
 LOCAL_BASE_URL=http://localhost:8000/v1 pi -e ./extensions/local-provider.ts \
@@ -228,6 +229,9 @@ LOCAL_BASE_URL=http://localhost:8000/v1 pi -e ./extensions/local-provider.ts \
 ```
 
 Part 2 is about what Pi adds: one session that uses Claude and the local model together.
+
+I ran the client-side commands of steps 2 to 5 against Flash-Next on 2026-11-23, with
+Claude Code 2.1.311 and Pi 1.5.2. Both agents created and ran a small Python file.
 
 ## Give the agent a sandbox
 
@@ -243,10 +247,10 @@ the model. My devcontainer, which also reaches port 8000 through `host.docker.in
 |---|---|---|
 | Ollama as an always-on service, next to vLLM | Removed | One server, one port. Ollama also kept listening openly on the server for five weeks after I stopped using it |
 | vLLM built from source, TurboQuant fork | Prebuilt Docker images per model | Standard pip vLLM crashes on the GB10 (sm_121). Images built for CUDA 13 run |
-| One model | Four backends, one at a time on port 8000 | Switching is a restart, not a client change |
+| One model | Three backends, one at a time on port 8000 | Switching is a restart, not a client change |
 | SSH to a LAN address | Tailscale, SSH only | Works from anywhere, nothing open on the router |
 | Tunnel bound to `*` | Tunnel bound to `127.0.0.1` | `*` exposed the model to every network the Mac joined |
-| `enable_thinking: false` | Thinking on, capped at 2048 tokens | All four models reason before answering; the cap keeps it short |
+| `enable_thinking: false` | Thinking on, capped at 2048 tokens | All three models reason before answering; the cap keeps it short |
 
 ## Tradeoffs
 
@@ -261,6 +265,6 @@ the model. My devcontainer, which also reaches port 8000 through `host.docker.in
 ## Where this leaves me
 
 Local AI for development is real: my code and prompts stay on hardware I own, there is no
-meter running, and the setup above has few enough parts that I can explain each one. What I no longer claim is that there is no catch. For refining a request,
-writing a plan and judging the result, I still want a frontier model. Part 2 shows how I
-combine both: [Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models).
+meter running, and the setup above has few enough parts that I can explain each one. What I
+no longer claim is that there is no catch. For refining a request, writing a plan and judging
+the result, I still want a frontier model. Part 2 shows how I combine both: [Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models).
