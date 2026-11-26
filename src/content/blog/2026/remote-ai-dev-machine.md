@@ -2,125 +2,137 @@
 title: "Local AI for Development: You Own Everything"
 pubDatetime: 2026-03-29T10:00:00+01:00
 modDatetime: 2026-11-26T10:00:00+01:00
-description: "How to run coding agents like Claude Code and Pi against your own GPU server: the model runs on the server, your laptop is only the interface. Rewritten in November 2026 as a short, general setup guide."
-heroImage: /assets/img/2026/remote-ai-dev-machine/local_models.png
+description: "Run Claude Code or Pi against a model on your own GPU. The model does the thinking on the GPU box, your laptop stays the place where you work, and an SSH tunnel connects the two."
+heroImage: /assets/img/2026/remote-ai-dev-machine/cover-drawing.jpg
 tags: ["llm", "vllm", "ssh", "tailscale", "claude-code", "selfhosted"]
 ---
 
-**Updated November 2026.** The first version of this post (March 2026) told the story of a
-weekend with Ollama, a vLLM build from source and a forked inference engine. None of that is
-part of my setup any more. This version keeps only what I still run and can explain, written so
-that you can rebuild it on your own hardware. Part 2,
-[Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models), builds on it.
+**Updated November 2026.** Back in March I wrote this post after a weekend of Ollama, building
+vLLM from source and a forked inference engine. It worked, kind of. Most of it is gone now.
+What's left is a setup with so few moving parts that I can explain all of them, and that's the
+version you're reading. [Part 2](/posts/2026/pi-virtual-models) builds on it and brings Claude
+back into the picture.
 
-The scripts used below are in
-[agentic-toolbox/examples/local-hybrid](https://github.com/ekoepplin/agentic-toolbox/tree/master/examples/local-hybrid).
+## Why bother?
 
-## The picture
+Coding agents are great. Claude Code, Pi and friends read your code, edit files, run your
+tests. But every prompt they send includes your code, and it all goes to someone else's
+servers. Every token is billed somewhere.
 
-The model runs on the server, because that is where the GPU and the memory are. The laptop
-runs the agent, Claude Code or Pi. The agent is the part that reads your files, edits them and
-runs commands. To think, it sends prompts to the model. Those prompts travel through an SSH
-tunnel, which makes a port on the server look like a port on your laptop. The agent talks to
-`localhost:8000` and does not care that the model sits on another machine.
+Open models got good enough this year that I do a lot of my day-to-day work with one running
+on my own hardware. My code never leaves machines I own, and there's no meter running. And
+once it's set up, it feels exactly like the cloud version.
+
+The trick is to split the work in two:
+
+- **The model** runs wherever the GPU is.
+- **The agent** runs on your laptop, next to your code.
+
+They talk through an SSH tunnel. As far as the agent knows, the model is at `localhost:8000`.
+It has no idea the model lives on another machine.
 
 ```
-Laptop (interface only)                   GPU server
-──────────────────────                    ─────────────────────────────
-Claude Code / Pi                          one model server, port 8000
-  reads and edits local files   SSH       bound to 127.0.0.1 only
-  sends prompts to              tunnel    speaks OpenAI + Anthropic API
-  localhost:8000  ────────────────────►
+ laptop                                 GPU machine
+┌───────────────────────┐  SSH tunnel  ┌───────────────────────┐
+│ Claude Code / Pi      │ ───────────> │ model server          │
+│ your code, your edits │  port 8000   │ reachable only        │
+└───────────────────────┘              │ through the tunnel    │
+                                       └───────────────────────┘
 ```
 
-Nothing on the laptop needs a GPU. Your files stay on your laptop, and the prompts, including
-the code the agent shows the model, go only to hardware you own.
+Your laptop needs no GPU. Your files stay on your laptop. Only the prompts go to the GPU, and
+that GPU is yours.
+
+All scripts from this post are in
+[agentic-toolbox/examples/local-hybrid](https://github.com/ekoepplin/agentic-toolbox/tree/master/examples/local-hybrid),
+so you can copy instead of typing.
 
 ## What you need
 
-- **A Linux server with an NVIDIA GPU** and enough memory for the model you want. Mine is an
-  HP ZGX AI Studio (NVIDIA GB10, 128 GB memory shared by CPU and GPU), but nothing below
-  depends on it. Your hardware decides which model fits, not how the setup works.
-- **A model server** on it. I use [vLLM](https://docs.vllm.ai) and
-  [SGLang](https://docs.sglang.ai) in Docker, which needs the
-  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-- **A laptop** with SSH, `curl` and `jq`, plus [Claude Code](https://code.claude.com),
+- **A GPU with enough memory for the model you want.** Where it sits doesn't matter: under
+  your desk, in the office, in a closet. Mine is a small HP box on my desk. Memory decides
+  which models you can run. Nothing else in this post depends on the hardware.
+- **A model server** that serves the model over HTTP. I use [vLLM](https://docs.vllm.ai) and
+  [SGLang](https://docs.sglang.ai). For most popular models you'll find ready-made Docker
+  images with sensible defaults. Start there. Don't build anything from source (been there, it
+  ate my weekend).
+- **A coding agent on your laptop:** [Claude Code](https://code.claude.com),
   [Pi](https://github.com/earendil-works/pi), or both.
 
-## Step 1: run one model server, on loopback
+## Step 1: get the model server right
 
-The model server loads the model into GPU memory and answers requests over HTTP. Which one and
-with which flags depends on your model and GPU. For many popular models there are repos with
-ready-made Docker images and tuned defaults, and I would start there rather than building
-anything from source.
+I won't tell you which flags to use, because that depends on your model and your GPU. What
+matters is what the server needs to do:
 
-My rule: **one model at a time, always on port 8000.** Every client points at port 8000, so
-switching models only ever happens on the server, and the clients never notice.
+- **Speak both APIs.** Claude Code speaks the Anthropic API, Pi speaks the OpenAI API. Recent
+  vLLM and SGLang do both on the same port, so one server works for both agents.
+- **Tool calling on.** This is the big one. Agents do everything through tool calls: read a
+  file, edit, run a command. With the wrong tool parser for your model, nothing crashes. The
+  agent just never sees a tool call and starts chatting instead of working. That kind of bug
+  can cost you an evening.
+- **A big context window.** Claude Code's very first request is already about 12,000 tokens,
+  and every file the agent reads adds to that. I wouldn't go below 64k.
+- **Only reachable from the server itself.** More on that now.
 
-Whatever you run, it has to do five things:
+### The one security thing you have to get right
 
-| Requirement | Why |
-|---|---|
-| Serve the **Anthropic Messages API** (`/v1/messages`) | Claude Code speaks this API. vLLM and SGLang both serve it |
-| Serve the **OpenAI chat API** (`/v1/chat/completions`) on the same port | Pi speaks this API |
-| Switch on **tool calling**, with the parser for your model family | Agents work through tool calls. With the wrong parser nothing crashes: the agent just never sees a tool call |
-| Offer a **large context window** | Claude Code's first request alone is about 12,000 tokens, and every file the agent reads adds to it. I would not go below 64k |
-| Bind the port to **127.0.0.1** only | The API has no password. Only the SSH tunnel should reach it |
+The model API has no password. Anyone who can reach the port can use your GPU and read your
+prompts. So the server should listen only on the machine itself (`127.0.0.1`), and the only
+way in is the SSH tunnel.
 
-The last point is the one people get wrong, so here is the detail. If the server runs in
-Docker, `-p 8000:8000` publishes the port on every network interface: your home network, the
-conference Wi-Fi, everything. Write `-p 127.0.0.1:8000:8000` instead. A firewall like `ufw`
-does not save you here, because Docker writes its own network rules that bypass it. If a
-ready-made repo starts the container for you, check its `docker run` line, and check it again
-after every update.
-
-To see what your server exposes, list every listening port that is not on loopback:
+If you run the server in Docker, this is where people get burned. `-p 8000:8000` opens the port
+on *every* network: your home Wi-Fi, the café Wi-Fi, everything. And a firewall like `ufw`
+won't save you, because Docker writes its own rules around it. Write this instead:
 
 ```bash
-ss -tlnH | awk '{print $4}' | grep -v -E '^(127\.|\[::1\])'
+docker run -p 127.0.0.1:8000:8000 ...
 ```
 
-You want to see SSH (port 22) and, if you use Tailscale, its own listeners. Port 8000 must not
-appear.
+If a ready-made repo starts the container for you, check its `docker run` line. Check it again
+after every update.
 
-## Step 2: reach the server through an SSH tunnel
+Test it from another device on the same network:
 
-On the laptop, one entry in `~/.ssh/config` sets up the tunnel:
+```bash
+curl -m 5 http://<server-address>:8000/v1/models
+```
+
+You want this to *fail*. If you get a model list back, the whole network can use your model.
+
+I learned this the hard way. In March I had Ollama running next to vLLM "just to try it". I
+stopped using it, but it kept running, without a password, reachable on my network, for weeks.
+
+## Step 2: the SSH tunnel
+
+One entry in `~/.ssh/config` on your laptop:
 
 ```ssh-config
 Host gpu
     HostName <your-server>
-    User <your-user>
     LocalForward 127.0.0.1:8000 localhost:8000
     ExitOnForwardFailure yes
     ServerAliveInterval 30
-    ServerAliveCountMax 3
-    ControlMaster auto
-    ControlPath ~/.ssh/cm-%r@%h:%p
-    ControlPersist 12h
 ```
 
 ```bash
-ssh -fN gpu                        # opens the tunnel in the background
-curl -s localhost:8000/v1/models   # the server's model list, now on the laptop
+ssh -fN gpu                        # tunnel up, in the background
+curl -s localhost:8000/v1/models   # the GPU's model list, now on your laptop
 ```
 
-The lines that matter:
+What's going on here: `LocalForward` takes port 8000 on your laptop and connects it to port
+8000 on the server. `ExitOnForwardFailure` makes `ssh` fail loudly if the port is already taken,
+instead of quietly connecting without a tunnel. `ServerAliveInterval` makes a dead tunnel die
+fast after your Wi-Fi drops, instead of hanging around and looking alive.
 
-- `LocalForward 127.0.0.1:8000 localhost:8000`: port 8000 on the laptop leads to port 8000
-  on the server, and opens on the laptop's loopback only. **My March post used `*:8000` here.
-  Don't.** That made my model reachable for everyone on whatever Wi-Fi my laptop had joined:
-  the same mistake as `-p 8000:8000`, on the other end of the tunnel.
-- `ExitOnForwardFailure yes`: if port 8000 is taken on the laptop, `ssh` fails loudly instead
-  of connecting without a tunnel.
-- `ServerAlive*`: after about 90 seconds without an answer, SSH gives up, so a dropped Wi-Fi
-  does not leave a dead tunnel behind that looks open.
-- `Control*`: later `ssh` commands reuse the open connection, and `ssh -O check gpu` tells you
-  whether the tunnel is still alive.
+Look at the `127.0.0.1` in the `LocalForward` line. In my March post that said `*:8000`, which
+put my model on whatever Wi-Fi my laptop had joined. Same mistake as `-p 8000:8000`, just on
+the other end of the tunnel. Don't do that.
 
-To reach the server from outside your home network, I use [Tailscale](https://tailscale.com).
-It builds a private network between your devices without opening any port on your router. In
-its access policy I allow exactly one thing, SSH to the server:
+### Away from home
+
+To reach the server from anywhere, I use [Tailscale](https://tailscale.com). It's a private
+network between your own devices, and you don't have to open any port on your router. In its
+access policy I allow exactly one thing, SSH to the GPU box:
 
 ```json
 {
@@ -131,20 +143,16 @@ its access policy I allow exactly one thing, SSH to the server:
 }
 ```
 
-Save the policy, then tag the server with `sudo tailscale up --advertise-tags=tag:gpu`. Even if
-a container ever opened a port by mistake, the tailnet would not carry traffic to it. Use the
-full Tailscale name (ending in `ts.net`) as `HostName`: a short name may resolve to the
-server's home-network address, and `ssh` then quietly takes that route instead.
+Tag the server with `sudo tailscale up --advertise-tags=tag:gpu` and use its full Tailscale
+name (the one ending in `ts.net`) as `HostName`. Even if a container opens a port by mistake,
+Tailscale won't let traffic through to it. And on the server: SSH keys only, no passwords.
 
-And on the server, allow SSH keys only, no passwords.
+## Step 3: can the server actually drive an agent?
 
-## Step 3: check that the server can drive an agent
-
-A model list only proves the server is up. Whether an agent can work with it depends on tool
-calls. [`check.sh`](https://github.com/ekoepplin/agentic-toolbox/blob/master/examples/local-hybrid/check.sh)
-tests the three things the agents need: the model list, a plain chat over the OpenAI API (what
-Pi sends), and a tool call over the Anthropic API (what Claude Code sends). It offers the model
-a weather tool and asks a question it can only answer with that tool:
+A model list only tells you the server is up. Whether an agent can *work* with it comes down
+to tool calls. So before you start an agent and wonder why it only chats,
+[`check.sh`](https://github.com/ekoepplin/agentic-toolbox/blob/master/examples/local-hybrid/check.sh)
+gives the model a fake weather tool and asks a question it can only answer by calling that tool:
 
 ```
 $ ./check.sh
@@ -154,15 +162,15 @@ $ ./check.sh
 check: ok
 ```
 
-If step 3 returns plain text instead of a tool call, check the server's tool-calling settings
-first.
+Line 2 is what Pi needs, line 3 is what Claude Code needs. If line 3 comes back as plain text
+instead of a tool call, look at your server's tool-calling settings first. Saves you a lot of
+guessing.
 
-## Step 4: Claude Code against the server
+## Step 4: Claude Code on your own model
 
-Claude Code sends its requests to whatever `ANTHROPIC_BASE_URL` says, so you can point it at
-the tunnel. A small shell function keeps the variables scoped to one command, so plain
-`claude` keeps working as before. This is
-[`clients.sh`](https://github.com/ekoepplin/agentic-toolbox/blob/master/examples/local-hybrid/clients.sh):
+Claude Code sends its requests wherever `ANTHROPIC_BASE_URL` points. Point it at the tunnel and
+you're done. Almost. I wrap it in a small function so plain `claude` keeps working as before
+([`clients.sh`](https://github.com/ekoepplin/agentic-toolbox/blob/master/examples/local-hybrid/clients.sh)):
 
 ```bash
 claude-local() {
@@ -181,29 +189,28 @@ source clients.sh
 LOCAL_MODEL=<id from /v1/models> LOCAL_CTX=<your context window> claude-local
 ```
 
-Two of these lines are easy to miss:
+Most of this is boring plumbing. Two lines will bite you if you leave them out:
 
-- **The model tiers.** `--model` only sets the main conversation. On the side, Claude Code
-  sends small background requests (titles, summaries) to its Haiku, Sonnet and Opus tiers, by
-  name. Your server has never heard of those names. The three `ANTHROPIC_DEFAULT_*_MODEL`
-  lines send every tier to your model.
-- **The context window.** Claude Code does not know your model, so it assumes 200k tokens,
-  warns about it at every start, and uses that number to decide when to compact the
-  conversation. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` tells it the real size
-  ([Claude Code docs](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id)).
+- **The model names.** On the side, Claude Code sends small background requests, like
+  titles and summaries, to "haiku", "sonnet" and "opus". Your server has never heard of
+  those names. The three `ANTHROPIC_DEFAULT_*` lines send them all to your model.
+- **The context window.** Claude Code doesn't know your model and assumes 200k tokens. It uses
+  that number to decide when to compact the conversation, so with a smaller model it compacts
+  way too late. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` tells it the real size
+  ([docs](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id)).
 
-The rest: the token can be any value because your server does not check it, the thinking limit
-stops reasoning models from deliberating for minutes over a trivial edit, and the one-hour
-timeout gives slow local decoding time to finish long answers.
+The rest: your server doesn't check the token, so any value works. The thinking cap stops a
+reasoning model from thinking for minutes about a one-line edit. And the long timeout gives a
+slow local model time to finish.
 
-From here on it feels like normal Claude Code. Every request to the model goes to your server;
-the tools, editing files and running commands, still run on your laptop.
+From here on it's just Claude Code. The thinking happens on your GPU, while files and commands
+stay on your laptop.
 
-## Step 5: Pi against the server
+## Step 5: Pi on your own model
 
-[Pi](https://github.com/earendil-works/pi) is an open-source coding agent, and part 2 is all
-about it. It speaks the OpenAI API and needs no wrapper: register the server once as a provider
-in `~/.pi/agent/models.json` (add the `gpu` entry if the file already exists):
+[Pi](https://github.com/earendil-works/pi) is an open-source coding agent, and Part 2 is all
+about it. Pi doesn't need a wrapper. You register your server once as a provider in
+`~/.pi/agent/models.json`:
 
 ```json
 {
@@ -225,55 +232,40 @@ in `~/.pi/agent/models.json` (add the `gpu` entry if the file already exists):
 pi --model gpu/<id>
 ```
 
-Hints:
+The `id` has to match `/v1/models` exactly. Set `contextWindow` and `maxTokens` to what your
+server actually offers. The `compat` and `reasoning` lines tell Pi how to switch thinking on and
+off for Qwen models. Drop them for models that don't think.
 
-- `id` must match the name in `/v1/models` character for character.
-- Set `contextWindow` and `maxTokens` to what your server offers. Pi's defaults are 128,000 and
-  16,384.
-- `thinkingFormat` tells Pi how to switch the model's thinking on and off. `qwen` sends the
-  `enable_thinking` parameter that Qwen models expect. Drop `compat` and `reasoning` for models
-  that do not think.
-
-**Tested:** On 2026-11-23 and 2026-11-26 I ran steps 3 to 5 against Qwen3.8-Flash-Next on vLLM,
-through my own tunnel, with Claude Code 2.1.311 and Pi 1.5.2. Both agents created a small
-Python file, ran it and reported its output.
+I ran steps 3 to 5 on 2026-11-26 against Qwen3.8-Flash-Next on vLLM, with Claude Code 2.1.311
+and Pi 1.5.2. Both agents wrote a small Python file, ran it and reported the output.
 
 ## Give the agent a sandbox
 
-A coding agent runs shell commands with your user's rights, and that is as true for a local
-model as for a cloud model. In one of my tests, the local model ran `pip install pytest` into my
-global Python without asking. Nothing bad happened, but it could have been anything.
+Easy to forget: a coding agent runs shell commands with *your* rights. A local model doesn't
+change that. In one of my tests, the local model ran `pip install pytest` into my global Python
+without asking. Nothing bad happened, but it could have been anything.
 
-So run agents in a container, or at least in a throwaway copy of your project, and never with
-credentials you would not hand to the model. My devcontainer is in
-[agentic-toolbox](https://github.com/ekoepplin/agentic-toolbox). It reaches the tunnel through
-`host.docker.internal`, so agents inside the container can use the server too.
+So put the agent in a container, or at least a throwaway copy of your project, and never give it
+credentials you wouldn't hand to the model. My devcontainer is in
+[agentic-toolbox](https://github.com/ekoepplin/agentic-toolbox). Agents inside it reach the
+tunnel through `host.docker.internal`, so they can use the GPU too.
 
-## What changed since March
+## The catch
 
-- **One model server at a time, one port.** In March, Ollama ran as a service next to vLLM, and
-  it stayed reachable on my network, without a password, for weeks after I had stopped using it.
-- **Ready-made Docker images instead of source builds.** Each build took tens of minutes.
-- **Everything on loopback, the tunnel included.** `*:8000` became `127.0.0.1:8000`.
-- **Tailscale with SSH only,** instead of SSH to a local IP address.
-- **Thinking on, but capped,** instead of switched off.
+It's not free, it's just paid up front. The hardware is the real entry cost, and memory decides
+what you can run at all. Starting a model takes minutes, not seconds, so switching models is a
+coffee break. And security is on you: the model API has no password, so the tunnel is your only
+door.
 
-## Tradeoffs
-
-| Concern | Reality |
-|---|---|
-| Hardware | The real entry cost. Memory decides which models you can run at all |
-| Startup | Minutes, not seconds. Switching models means a restart |
-| Security | The model API has no password. Loopback plus SSH-only access is what protects it |
-| Quality | Good enough for much of my day-to-day work. Tool-calling quality over long sessions I have not measured |
-| Safety | The agent has a shell. Give it a sandbox |
+Quality? Good enough for a lot of my daily work. How it holds up over long agent sessions I
+haven't measured, so I won't pretend I have.
 
 ## Where this leaves me
 
-Local AI for development is real. My code and prompts stay on hardware I own, there is no
-meter running, and the setup has few enough parts that I can explain each one, which is more
-than I could say in March.
+Local AI for development is real, and the boring setup is the one that sticks: one model
+server, one tunnel, your agent of choice. My code and prompts stay on my hardware, nothing is
+billed per token, and I can explain every piece of it. I couldn't say that in March.
 
-What I no longer claim is that there is no catch. For sharpening a request, writing a plan and
-judging the result, I still want a frontier model. Part 2 shows how I combine both:
+What I won't claim is that the local model does everything. For sharpening a request, writing a
+plan and judging the result, I still want a frontier model. Part 2 is about combining both:
 [Claude Subscription Meets Local Server](/posts/2026/pi-virtual-models).
